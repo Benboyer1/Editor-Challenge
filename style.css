@@ -1,0 +1,47 @@
+/* Custom Styles & Animations */
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #f1f5f9; /* Slate 100 */
+            overflow: hidden; /* Prevent body scroll, handle inside app */
+        }
+        
+        .font-serif {
+            font-family: 'Merriweather', serif;
+        }
+
+        /* Paper Card Effect */
+        .paper-card {
+            background-color: #fefce8; /* Yellow 50 */
+            box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05);
+            border-left: 4px solid #ef4444; /* Red margin line */
+        }
+
+        /* Animations */
+        @keyframes shake {
+            0%, 100% { transform: translateX(0); }
+            10%, 30%, 50%, 70%, 90% { transform: translateX(-4px); }
+            20%, 40%, 60%, 80% { transform: translateX(4px); }
+        }
+        .shake { animation: shake 0.4s cubic-bezier(.36,.07,.19,.97) both; }
+
+        @keyframes popIn {
+            0% { transform: scale(0.9); opacity: 0; }
+            100% { transform: scale(1); opacity: 1; }
+        }
+        .pop-in { animation: popIn 0.2s ease-out forwards; }
+
+        @keyframes pulseNumber {
+            0% { transform: scale(0.5); opacity: 0; }
+            50% { transform: scale(1.2); opacity: 1; }
+            100% { transform: scale(1); opacity: 1; }
+        }
+        .pulse-num { animation: pulseNumber 0.5s ease-out forwards; }
+
+        /* Utility */
+        .no-select { user-select: none; -webkit-user-select: none; }
+        
+        /* Modal Overlay Background */
+        .modal-backdrop {
+            background-color: rgba(15, 23, 42, 0.75); /* Slate 900 @ 75% */
+            backdrop-filter: blur(4px);
+        }
