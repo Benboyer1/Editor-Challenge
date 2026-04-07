@@ -545,6 +545,7 @@ window.game = {
     init: function() {
         confetti.init();
         window.ui.showHome();
+        window.ui.initInstallPrompt();
     },
 
     toggleSoundMute: function() {
@@ -1126,6 +1127,61 @@ window.ui = {
             console.error('Error fetching leaderboard:', error);
             listEl.innerHTML = '<p class="text-center text-red-500 py-8">Failed to load leaderboard. Try again later.</p>';
         }
+    },
+
+    initInstallPrompt: function() {
+        // Gatekeeper: Check if already seen or in standalone mode
+        if (localStorage.getItem('hasSeenInstallPrompt') || window.matchMedia('(display-mode: standalone)').matches) {
+            return;
+        }
+
+        const toast = document.getElementById('install-toast');
+        const closeBtn = document.getElementById('close-install-toast');
+        const installBtn = document.getElementById('install-btn');
+        const instructions = document.getElementById('install-instructions');
+
+        if (!toast || !closeBtn || !installBtn || !instructions) return;
+
+        let deferredPrompt;
+
+        // Android Logic
+        window.addEventListener('beforeinstallprompt', (e) => {
+            e.preventDefault();
+            deferredPrompt = e;
+            toast.classList.remove('hidden');
+            installBtn.classList.remove('hidden');
+            instructions.innerText = 'Get the full-screen app experience!';
+        });
+
+        // iOS Logic
+        const isIOS = /iphone|ipad|ipod/.test(navigator.userAgent.toLowerCase());
+        if (isIOS) {
+            toast.classList.remove('hidden');
+            instructions.innerText = "To install: tap the Share icon at the bottom of Safari and select 'Add to Home Screen'.";
+        }
+
+        // Install Button Click
+        installBtn.addEventListener('click', () => {
+            if (deferredPrompt) {
+                deferredPrompt.prompt();
+                deferredPrompt.userChoice.then((choiceResult) => {
+                    if (choiceResult.outcome === 'accepted') {
+                        console.log('User accepted the install prompt');
+                    } else {
+                        console.log('User dismissed the install prompt');
+                    }
+                    deferredPrompt = null;
+                });
+            }
+            localStorage.setItem('hasSeenInstallPrompt', 'true');
+            toast.classList.add('hidden');
+        });
+
+        // Close Button Click
+        closeBtn.addEventListener('click', () => {
+            localStorage.setItem('hasSeenInstallPrompt', 'true');
+            toast.classList.add('hidden');
+        });
     }
 };
 
