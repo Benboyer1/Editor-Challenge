@@ -14,6 +14,13 @@
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;800&family=Merriweather:ital,wght@0,300;0,700;1,300&display=swap" rel="stylesheet">
 
         <link rel="stylesheet" href="style.css">
+
+    <!-- PWA Support -->
+    <link rel="manifest" href="manifest.json">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black">
+    <meta name="theme-color" content="#000000">
+    <link rel="apple-touch-icon" href="assets/icon-192.png">
 </head>
 <body class="h-[100dvh] w-screen text-slate-800">
 
@@ -41,64 +48,108 @@
             <div id="countdown-number" class="text-9xl font-black text-white">3</div>
         </div>
 
+        <!-- ==================== USER SIDEBAR ==================== -->
+        <div id="user-sidebar" class="fixed top-0 left-0 w-64 h-full bg-white shadow-2xl z-50 transform -translate-x-full transition-transform duration-300">
+            <div class="flex items-center justify-between p-4 border-b border-slate-200">
+                <div class="text-lg font-semibold text-slate-900">Your Profile</div>
+                <button onclick="window.ui.closeSidebar()" class="text-2xl text-slate-500 hover:text-slate-900">×</button>
+            </div>
+            <div class="p-6 space-y-6">
+                <div id="guest-ui" class="flex flex-col items-center gap-3">
+                    <div class="text-center">
+                        <p class="text-sm text-slate-500 uppercase tracking-[0.2em]">Welcome</p>
+                        <p class="mt-2 text-lg font-bold text-slate-900">Guest Player</p>
+                    </div>
+                    <button onclick="window.authEngine.login()" class="inline-flex items-center justify-center gap-2 rounded-full bg-indigo-600 px-5 py-3 text-sm font-semibold text-white shadow-lg shadow-indigo-200/40 transition hover:bg-indigo-700">
+                        <img src="https://www.gstatic.com/firebasejs/ui/2.0.0/images/auth/google.svg" alt="Google" class="h-4 w-4">
+                        Sign in with Google
+                    </button>
+                </div>
+
+                <div id="logged-in-ui" class="hidden space-y-6">
+                    <div class="flex flex-col items-center gap-3">
+                        <div class="w-24 h-24 rounded-full overflow-hidden border border-slate-200">
+                            <img id="sidebar-avatar" class="w-full h-full object-cover" src="" alt="User avatar">
+                        </div>
+                        <div class="text-center">
+                            <p class="text-sm text-slate-500 uppercase tracking-[0.2em]">Signed in as</p>
+                            <p id="sidebar-user-name" class="mt-2 text-lg font-bold text-slate-900">Player</p>
+                        </div>
+                    </div>
+
+                    <div class="space-y-3">
+                        <label class="text-sm font-semibold text-slate-700">Change Name</label>
+                        <input id="sidebar-name-input" type="text" placeholder="New display name" class="w-full rounded-2xl border border-slate-200 px-4 py-3 text-sm shadow-sm focus:outline-none focus:ring-2 focus:ring-indigo-500" />
+                        <button onclick="window.authEngine.updateName()" class="w-full rounded-full bg-indigo-600 px-4 py-3 text-sm font-semibold text-white shadow-lg shadow-indigo-200/40 transition hover:bg-indigo-700">Update</button>
+                    </div>
+
+                    <button onclick="window.ui.toggleDarkMode()" class="w-full rounded-full border border-slate-200 bg-slate-100 px-4 py-3 text-sm font-semibold text-slate-700 shadow-sm transition hover:bg-slate-200">Toggle Dark Mode</button>
+                </div>
+            </div>
+            <div class="absolute bottom-0 left-0 right-0 p-4">
+                <div id="logged-in-ui-bottom" class="hidden">
+                    <button onclick="window.authEngine.logout()" class="w-full rounded-full bg-red-600 px-4 py-3 text-sm font-semibold text-white shadow-lg shadow-red-200/40 transition hover:bg-red-700">Logout</button>
+                </div>
+            </div>
+        </div>
+
         <!-- ==================== HOME SCREEN ==================== -->
         <div id="screen-home" class="absolute inset-0 z-20 bg-slate-50 flex flex-col">
             
             <!-- Header -->
-            <header class="h-16 bg-white border-b border-slate-200 flex items-center justify-end px-4 shrink-0 z-30 shadow-sm">
-                <button id="btn-audio-toggle-home" onclick="window.audio.toggleAudio()" class="p-2 text-slate-400 hover:text-slate-700 rounded-lg hover:bg-slate-100">
-                    <span id="audio-toggle-icon-home">🔊</span>
-                </button>
+            <header class="absolute top-0 left-0 right-0 z-30 flex justify-between items-center w-full px-4 py-4 bg-white/95 backdrop-blur-xl border-b border-slate-200 shadow-sm">
+                <div class="flex items-center gap-3">
+                    <button id="btn-user-profile" onclick="window.ui.openSidebar()" class="w-12 h-12 rounded-full overflow-hidden border border-slate-200 shadow-sm bg-slate-100 focus:outline-none" aria-label="Open profile sidebar">
+                        <img id="header-avatar" class="w-full h-full object-cover" src="data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMjQiIGhlaWdodD0iMjQiIHZpZXdCb3g9IjAgMCAyNCAyNCIgZmlsbD0ibm9uZSIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj4KPHBhdGggZD0iTTEyIDEyYzIuMjEgMCA0LTEuNzkgNC00cy0xLjc5LTQtNC00LTQgMS43OS00IDQgMS43OSA0IDQgNHptMCAyYy0yLjY3IDAtOCAxLjM0LTggNFYyMWgxNnYtMmMwLTIuNjYtNS4zMy00LTgtNHoiIGZpbGw9IiM5Y2E0YWYiLz4KPC9zdmc+" alt="Guest avatar">
+                    </button>
+                </div>
+                <div class="flex items-center gap-3">
+                    <button id="btn-leaderboard-home" onclick="window.ui.handleLeaderboardButton()" class="w-11 h-11 rounded-full border border-slate-200 bg-white shadow-sm text-slate-600 hover:bg-slate-50 transition flex items-center justify-center" aria-label="Leaderboard">
+                        🏆
+                    </button>
+                    <button id="btn-sound-toggle-home" onclick="window.game.toggleSoundMute()" class="w-11 h-11 rounded-full border border-slate-200 bg-white shadow-sm text-slate-600 hover:bg-slate-50 transition flex items-center justify-center" aria-label="Toggle sound">
+                        <span id="audio-toggle-icon-home">🔊</span>
+                    </button>
+                </div>
             </header>
 
             <!-- Main Content -->
-            <main class="flex-grow flex flex-col items-center justify-center p-6 space-y-8">
+            <main class="flex-grow flex flex-col items-center justify-center p-6 pt-24 space-y-8">
             
             <div class="text-center space-y-2 mb-4">
                 <h1 class="text-4xl font-extrabold text-slate-900 tracking-tight">Editor's<br><span class="text-indigo-600">Challenge</span></h1>
                 <p class="text-slate-500 font-serif italic mt-2">"Stet. Let it stand."</p>
             </div>
 
-            <div class="w-full flex flex-col items-center gap-4">
-                <button id="btn-google-signin" onclick="window.authEngine.login()" class="w-full bg-white border border-slate-300 hover:border-indigo-500 hover:text-indigo-600 text-slate-700 font-bold py-4 rounded-xl shadow-sm transition-all flex items-center justify-center gap-3 px-6">
-                    <img src="https://www.gstatic.com/firebasejs/ui/2.0.0/images/auth/google.svg" alt="Google logo" class="h-5 w-5">
-                    <span class="text-base">Sign in with Google</span>
-                </button>
-                <div id="player-profile" class="hidden w-full bg-white border border-slate-200 rounded-3xl p-4 shadow-sm flex items-center gap-4">
-                    <img id="player-avatar" class="h-14 w-14 rounded-full object-cover" src="" alt="Player avatar">
-                    <div class="flex-1 min-w-0">
-                        <p class="text-xs uppercase tracking-[0.2em] text-slate-400">Player Profile</p>
-                        <p id="player-name" class="font-bold text-lg text-slate-900 truncate">Player Name</p>
+            <div class="w-full grid gap-4">
+                <button onclick="window.game.start('standard')" class="group w-full rounded-[28px] border border-slate-200 bg-white/90 p-6 text-left shadow-xl shadow-slate-200/50 transition hover:-translate-y-0.5 hover:shadow-2xl">
+                    <div class="flex items-center justify-between">
+                        <div>
+                            <p class="text-lg font-bold text-slate-900">Standard Mode</p>
+                            <p class="mt-2 text-sm text-slate-500">Relaxed pace. 3 lives. Build streaks in comfort.</p>
+                        </div>
+                        <span class="text-2xl text-slate-400 group-hover:text-indigo-600">→</span>
                     </div>
-                    <button onclick="window.authEngine.logout()" class="text-slate-400 hover:text-slate-600 text-sm font-medium">Sign Out</button>
-                </div>
+                </button>
+                <button onclick="window.game.start('deadline')" class="group w-full rounded-[28px] border border-indigo-200 bg-indigo-500/10 p-6 text-left shadow-xl shadow-indigo-200/30 transition hover:-translate-y-0.5 hover:shadow-2xl">
+                    <div class="flex items-center justify-between">
+                        <div>
+                            <p class="text-lg font-bold text-slate-900">Deadline Mode ⚡</p>
+                            <p class="mt-2 text-sm text-slate-500">10s timer. High stakes. Fast editing flow.</p>
+                        </div>
+                        <span class="text-2xl text-indigo-600 group-hover:text-indigo-800">→</span>
+                    </div>
+                </button>
+                <button onclick="window.game.start('blitz')" class="group w-full rounded-[28px] border border-orange-200 bg-orange-500/10 p-6 text-left shadow-xl shadow-orange-200/30 transition hover:-translate-y-0.5 hover:shadow-2xl">
+                    <div class="flex items-center justify-between">
+                        <div>
+                            <p class="text-lg font-bold text-slate-900">Blitz Mode ⏱️</p>
+                            <p class="mt-2 text-sm text-slate-500">60 seconds. Infinite lives. Test your speed.</p>
+                        </div>
+                        <span class="text-2xl text-orange-600 group-hover:text-orange-800">→</span>
+                    </div>
+                </button>
             </div>
-
-            <!-- Primary Actions -->
-            <div class="w-full space-y-3">
-                <button onclick="window.game.start('standard')" class="w-full bg-white border-2 border-slate-200 hover:border-indigo-500 hover:text-indigo-600 text-slate-700 font-bold py-5 rounded-xl shadow-sm transition-all flex items-center justify-between px-6 group active:bg-slate-50 relative z-30">
-                    <span class="flex flex-col items-start">
-                        <span class="text-lg">Standard Mode</span>
-                        <span class="text-sm text-slate-400 font-normal">Relaxed pace. 3 Lives.</span>
-                    </span>
-                    <span class="text-slate-300 group-hover:text-indigo-500 text-2xl">→</span>
-                </button>
-
-                <button onclick="window.game.start('deadline')" class="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-5 rounded-xl shadow-md transition-all flex items-center justify-between px-6 group active:bg-indigo-800 relative z-30">
-                    <span class="flex flex-col items-start">
-                        <span class="flex items-center gap-2 text-lg">Deadline Mode ⚡</span>
-                        <span class="text-sm text-indigo-200 font-normal">10s Timer. High Stakes.</span>
-                    </span>
-                    <span class="text-indigo-300 group-hover:text-white text-2xl">→</span>
-                </button>
-
-                <button onclick="window.game.start('blitz')" class="w-full bg-orange-500 hover:bg-orange-600 text-white font-bold py-5 rounded-xl shadow-md transition-all flex items-center justify-between px-6 group active:bg-orange-700 relative z-30">
-                    <span class="flex flex-col items-start">
-                        <span class="flex items-center gap-2 text-lg">Blitz Mode ⏱️</span>
-                        <span class="text-sm text-orange-100 font-normal">60 Seconds. Infinite Lives. Pure Speed.</span>
-                    </span>
-                    <span class="text-orange-300 group-hover:text-white text-2xl">→</span>
-                </button>
 
             <!-- Secondary Actions -->
              <div class="grid grid-cols-2 gap-3 w-full">
@@ -107,11 +158,6 @@
                 </button>
                 <button onclick="window.ui.toggleModal('modal-cheat', true)" class="w-full bg-amber-100 hover:bg-amber-200 text-amber-800 font-bold py-4 rounded-lg text-base transition-colors active:bg-amber-300 relative z-30">
                     Cheat Sheet
-                </button>
-            </div>
-            <div class="w-full">
-                <button onclick="window.ui.showLeaderboard()" class="w-full bg-amber-500 hover:bg-amber-600 text-white font-bold py-4 rounded-lg text-base transition-colors active:bg-amber-700 relative z-30">
-                    Global Leaderboard 🏆
                 </button>
             </div>
             </main>
@@ -140,7 +186,7 @@
                 </div>
 
                 <div class="flex items-center gap-2">
-                    <button id="btn-audio-toggle-game" onclick="window.audio.toggleAudio()" class="p-2 text-slate-400 hover:text-slate-700 rounded-lg hover:bg-slate-100">
+                    <button id="btn-audio-toggle-game" onclick="window.game.toggleSoundMute()" class="p-2 text-slate-400 hover:text-slate-700 rounded-lg hover:bg-slate-100">
                         <span id="audio-toggle-icon-game">🔊</span>
                     </button>
                     <button onclick="window.ui.toggleModal('modal-cheat', true)" class="p-2 text-indigo-500 hover:text-indigo-700 font-bold text-sm bg-indigo-50 rounded-lg">
@@ -420,10 +466,27 @@
                 <div id="leaderboard-list" class="flex-1 overflow-y-auto space-y-3">
                     <!-- Leaderboard items will be injected here -->
                 </div>
+
+                <div id="leaderboard-login-prompt" class="mt-4 p-3 bg-slate-50 rounded-lg text-center text-sm text-slate-600">
+                    Want your name on the board? <button onclick="window.authEngine.login()" class="text-indigo-600 font-semibold hover:underline">Sign in</button> to save scores.
+                </div>
             </div>
         </div>
 
     </div>
 <script type="module" src="app.js"></script>
+
+<!-- Service Worker Registration -->
+<script>
+  if ('serviceWorker' in navigator) {
+    window.addEventListener('load', () => {
+      navigator.serviceWorker.register('./sw.js').then(reg => {
+        console.log('Service Worker registered!', reg);
+      }).catch(err => {
+        console.log('Service Worker registration failed: ', err);
+      });
+    });
+  }
+</script>
 </body>
 </html>

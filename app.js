@@ -1,5 +1,5 @@
 import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
-import { getAuth, signInWithPopup, GoogleAuthProvider, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+import { getAuth, signInWithPopup, GoogleAuthProvider, onAuthStateChanged, signOut, updateProfile } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
 import { getFirestore, collection, addDoc, query, orderBy, limit, getDocs, where } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
 const firebaseConfig = {
@@ -28,31 +28,71 @@ const authEngine = {
     logout: async function() {
         try {
             await signOut(auth);
+            window.ui.closeSidebar();
+            updateAuthUI(null);
         } catch (error) {
             console.log('Firebase logout failed', error);
+        }
+    },
+    updateName: async function() {
+        const input = document.getElementById('sidebar-name-input');
+        if (!input) return;
+        const newName = input.value.trim();
+        if (!newName) return;
+
+        const user = auth.currentUser;
+        if (!user) {
+            alert('Sign in to update your name.');
+            return;
+        }
+
+        try {
+            await updateProfile(user, { displayName: newName });
+            input.value = '';
+            updateAuthUI(auth.currentUser);
+        } catch (error) {
+            console.error('Name update failed', error);
+            alert('Unable to update your name. Try again.');
         }
     }
 };
 window.authEngine = authEngine;
 
 const updateAuthUI = (user) => {
-    const signInButton = document.getElementById('btn-google-signin');
-    const profilePanel = document.getElementById('player-profile');
-    const profileName = document.getElementById('player-name');
-    const profileAvatar = document.getElementById('player-avatar');
+    const profileButton = document.getElementById('btn-user-profile');
+    const headerAvatar = document.getElementById('header-avatar');
+    const sidebarAvatar = document.getElementById('sidebar-avatar');
+    const sidebarName = document.getElementById('sidebar-user-name');
+    const leaderboardButton = document.getElementById('btn-leaderboard-home');
+    const guestUI = document.getElementById('guest-ui');
+    const loggedInUI = document.getElementById('logged-in-ui');
+    const loggedInUIBottom = document.getElementById('logged-in-ui-bottom');
+    const leaderboardLoginPrompt = document.getElementById('leaderboard-login-prompt');
 
-    if (!signInButton || !profilePanel || !profileName || !profileAvatar) return;
+    if (!profileButton || !headerAvatar || !sidebarAvatar || !sidebarName || !leaderboardButton || !guestUI || !loggedInUI || !loggedInUIBottom || !leaderboardLoginPrompt) return;
 
     if (user) {
-        signInButton.classList.add('hidden');
-        profilePanel.classList.remove('hidden');
-        profileName.innerText = user.displayName || 'Player';
-        profileAvatar.src = user.photoURL || 'https://www.gravatar.com/avatar/?d=mp';
+        profileButton.classList.remove('hidden');
+        headerAvatar.src = user.photoURL || 'https://www.gravatar.com/avatar/?d=mp';
+        sidebarAvatar.src = user.photoURL || 'https://www.gravatar.com/avatar/?d=mp';
+        sidebarName.innerText = user.displayName || 'Player';
+        leaderboardButton.disabled = false;
+        leaderboardButton.classList.remove('opacity-40', 'cursor-not-allowed');
+        guestUI.classList.add('hidden');
+        loggedInUI.classList.remove('hidden');
+        loggedInUIBottom.classList.remove('hidden');
+        leaderboardLoginPrompt.classList.add('hidden');
     } else {
-        signInButton.classList.remove('hidden');
-        profilePanel.classList.add('hidden');
-        profileName.innerText = '';
-        profileAvatar.src = '';
+        profileButton.classList.remove('hidden');
+        headerAvatar.src = 'data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMjQiIGhlaWdodD0iMjQiIHZpZXdCb3g9IjAgMCAyNCAyNCIgZmlsbD0ibm9uZSIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj4KPHBhdGggZD0iTTEyIDEyYzIuMjEgMCA0LTEuNzkgNC00cy0xLjc5LTQtNC00LTQgMS43OS00IDQgMS43OSA0IDQgNHptMCAyYy0yLjY3IDAtOCAxLjM0LTggNFYyMWgxNnYtMmMwLTIuNjYtNS4zMy00LTgtNHoiIGZpbGw9IiM5Y2E0YWYiLz4KPC9zdmc+';
+        sidebarAvatar.src = '';
+        sidebarName.innerText = 'Player';
+        leaderboardButton.disabled = false;
+        leaderboardButton.classList.remove('opacity-40', 'cursor-not-allowed');
+        guestUI.classList.remove('hidden');
+        loggedInUI.classList.add('hidden');
+        loggedInUIBottom.classList.add('hidden');
+        leaderboardLoginPrompt.classList.remove('hidden');
     }
 };
 
@@ -90,6 +130,7 @@ const audio = {
         }
     },
     playTone: async function(freq, type, duration, vol = 0.1) {
+        if (window.game?.state?.globalMuted) return;
         if (!this.enabled) return;
         if (!this.ctx) await this.init();
         if (!this.ctx) return;
@@ -130,8 +171,9 @@ const audio = {
         });
     },
     toggleAudio: async function() {
-        this.enabled = !this.enabled;
-        if (this.enabled) {
+        window.game.state.globalMuted = !window.game.state.globalMuted;
+        this.enabled = !window.game.state.globalMuted;
+        if (!window.game.state.globalMuted) {
             await this.init();
         }
         window.ui.updateAudioToggle();
@@ -494,6 +536,7 @@ window.game = {
         timeLeft: 10,
         paused: false,
         bentzyTriggered: false,
+        globalMuted: false,
         count: 0,
         globalTimeLeft: 60,
         globalTimer: null
@@ -502,6 +545,14 @@ window.game = {
     init: function() {
         confetti.init();
         window.ui.showHome();
+    },
+
+    toggleSoundMute: function() {
+        this.state.globalMuted = !this.state.globalMuted;
+        if (!this.state.globalMuted) {
+            audio.init().catch(() => {});
+        }
+        window.ui.updateAudioToggle();
     },
 
     start: function(mode) {
@@ -798,6 +849,20 @@ window.ui = {
         this.updateAudioToggle();
     },
 
+    openSidebar: function() {
+        const sidebar = document.getElementById('user-sidebar');
+        if (sidebar) sidebar.classList.remove('-translate-x-full');
+    },
+
+    closeSidebar: function() {
+        const sidebar = document.getElementById('user-sidebar');
+        if (sidebar) sidebar.classList.add('-translate-x-full');
+    },
+
+    toggleDarkMode: function() {
+        document.documentElement.classList.toggle('dark');
+    },
+
     toggleModal: function(id, forceState) {
         const el = document.getElementById(id);
         const isHidden = el.classList.contains('hidden');
@@ -823,9 +888,18 @@ window.ui = {
     updateAudioToggle: function() {
         const iconHome = document.getElementById('audio-toggle-icon-home');
         const iconGame = document.getElementById('audio-toggle-icon-game');
-        const active = window.audio.enabled;
-        if (iconHome) iconHome.innerText = active ? '🔊' : '🔇';
-        if (iconGame) iconGame.innerText = active ? '🔊' : '🔇';
+        const muted = window.game.state.globalMuted;
+        const icon = muted ? '🔇' : '🔊';
+        if (iconHome) iconHome.innerText = icon;
+        if (iconGame) iconGame.innerText = icon;
+    },
+
+    handleLeaderboardButton: function() {
+        if (!auth.currentUser) {
+            alert('Sign in to view leaderboards');
+            return;
+        }
+        this.showLeaderboard();
     },
 
     getQuestionTypeDetail: function(q) {
