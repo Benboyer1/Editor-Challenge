@@ -246,14 +246,23 @@
             </div>
 
             <!-- Main Content (Paper) -->
-            <main class="flex-grow overflow-y-auto p-6 flex items-center justify-center relative">
+            <main class="flex-grow overflow-y-auto p-6 flex flex-col items-center justify-center relative">
                 <!-- Streak Indicator -->
                 <div id="streak-badge" class="absolute top-4 right-4 bg-amber-400 text-amber-900 px-3 py-1 rounded-full text-xs font-bold transform rotate-12 shadow-sm opacity-0 transition-opacity z-10 flex items-center gap-1">
                     <svg class="w-4 h-4" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 18c-4.41 0-8-3.59-8-8s3.59-8 8-8 8 3.59 8 8-3.59 8-8 8zm3.5-9c.83 0 1.5-.67 1.5-1.5S16.33 8 15.5 8 14 8.67 14 9.5s.67 1.5 1.5 1.5zm-7 0c.83 0 1.5-.67 1.5-1.5S9.33 8 8.5 8 7 8.67 7 9.5 7.67 11 8.5 11zm3.5 6.5c2.33 0 4.31-1.46 5.11-3.5H6.89c.8 2.04 2.78 3.5 5.11 3.5z"/></svg>
-                    x<span id="streak-count">0</span>
+                    <span id="streak-count">0</span>
+                    <span id="streak-multiplier" class="hidden ml-1 px-1.5 py-0.5 rounded-md text-[10px] font-black bg-amber-600 text-amber-50 shadow-sm"></span>
                 </div>
 
-                <div id="question-card" class="paper-card w-full max-w-md p-8 min-h-[280px] flex flex-col justify-center relative rounded-sm transform rotate-1 transition-transform duration-300">
+                <!-- Blitz Streak Display (Top center, above card) -->
+                <div id="blitz-streak-display" class="hidden mb-4 transition-transform duration-150 z-20">
+                    <div class="bg-orange-100 text-orange-600 border-2 border-orange-200 px-6 py-2 rounded-full font-black text-2xl shadow-sm dark:bg-orange-500/20 dark:text-orange-400 dark:border-orange-500/30 flex items-center gap-2">
+                        ⚡ Streak: <span id="blitz-streak-count">0</span>
+                        <span id="blitz-streak-multiplier" class="hidden ml-2 px-2 py-1 rounded-lg text-sm font-black bg-orange-500 text-white shadow-sm dark:bg-orange-600 dark:text-orange-50"></span>
+                    </div>
+                </div>
+
+                <div id="question-card" class="paper-card w-full max-w-md p-8 min-h-[280px] flex flex-col justify-center relative z-10 rounded-sm transform rotate-1 transition-transform duration-300">
                     <span class="absolute top-4 left-4 bg-indigo-100 text-indigo-800 px-3 py-1 rounded-full text-xs font-bold tracking-wide uppercase shadow-sm" id="q-category">SYNTAX</span>
                     <div class="mt-8 mb-6">
                         <p id="q-prompt" class="text-sm font-bold text-indigo-500 uppercase tracking-wider mb-2 hidden"></p>
@@ -328,12 +337,17 @@
                         Main Menu
                     </button>
                     
-                    <button onclick="window.ui.showLeaderboard()" class="w-full bg-amber-500 text-white font-bold py-4 rounded-xl shadow-lg hover:bg-amber-600 transition-all text-lg flex items-center justify-start gap-2 px-4 dark:bg-amber-400 dark:text-amber-950 dark:hover:bg-amber-300">
+                    <button onclick="window.ui.showLeaderboard(window.game.state.mode, true)" class="w-full bg-amber-500 text-white font-bold py-4 rounded-xl shadow-lg hover:bg-amber-600 transition-all text-lg flex items-center justify-start gap-2 px-4 dark:bg-amber-400 dark:text-amber-950 dark:hover:bg-amber-300">
                         <svg class="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                             <path d="M4 19h16M4 15h10M4 11h16M4 7h6"></path>
                         </svg>
                         Global Leaderboard
                     </button>
+                </div>
+                
+                <!-- Guest Save Prompt -->
+                <div id="gameover-guest-prompt" class="hidden mt-4 text-sm text-slate-500 dark:text-slate-400">
+                    Scores aren't saved for guests. <button onclick="window.authEngine.login()" class="text-indigo-600 font-bold hover:underline dark:text-indigo-400">Sign in to save</button>
                 </div>
             </div>
         </div>
@@ -507,7 +521,10 @@
 
                 <!-- Emoji Avatar Grid -->
                 <div class="mb-6">
-                    <label class="text-sm font-semibold text-slate-700 mb-3 block dark:text-slate-200">Choose Avatar</label>
+                    <div class="flex justify-between items-end mb-3">
+                        <label class="text-sm font-semibold text-slate-700 block dark:text-slate-200">Choose Avatar</label>
+                        <button onclick="window.ui.selectProfileEmoji(null, '👤'); window.ui.selectProfileColor(null, 'bg-slate-200')" class="text-xs font-semibold text-slate-400 hover:text-red-500 transition-colors">Remove Avatar</button>
+                    </div>
                     <div class="grid grid-cols-6 gap-2" id="profile-emoji-grid">
                         <button onclick="window.ui.selectProfileEmoji(this, '🦊')" class="w-full aspect-square rounded-lg bg-slate-100 hover:bg-slate-200 flex items-center justify-center text-2xl transition border-2 border-transparent" aria-label="Fox">🦊</button>
                         <button onclick="window.ui.selectProfileEmoji(this, '🐙')" class="w-full aspect-square rounded-lg bg-slate-100 hover:bg-slate-200 flex items-center justify-center text-2xl transition border-2 border-transparent" aria-label="Octopus">🐙</button>
@@ -556,16 +573,10 @@
 
                 <div class="flex flex-1 flex-col min-h-0">
                     <!-- Tab Navigation -->
-                    <div class="flex flex-wrap gap-2 mb-4 pb-3 border-b border-slate-100">
+                    <div id="leaderboard-tab-nav" class="flex flex-wrap gap-2 mb-4 pb-3 border-b border-slate-100 dark:border-slate-700">
                         <button onclick="window.ui.showLeaderboard('standard')" id="lb-tab-standard" class="px-3 py-1 rounded-full text-xs font-bold transition-all bg-slate-200 text-slate-700 hover:bg-slate-300">Standard</button>
                         <button onclick="window.ui.showLeaderboard('deadline')" id="lb-tab-deadline" class="px-3 py-1 rounded-full text-xs font-bold transition-all bg-slate-200 text-slate-700 hover:bg-slate-300">Deadline</button>
                         <button onclick="window.ui.showLeaderboard('blitz')" id="lb-tab-blitz" class="px-3 py-1 rounded-full text-xs font-bold transition-all bg-slate-200 text-slate-700 hover:bg-slate-300">Blitz</button>
-                    </div>
-                    
-                    <!-- Deadline Sub-Navigation (Space reserved across modes) -->
-                    <div id="deadline-sub-nav" class="invisible flex gap-2 mb-4 min-h-[60px] pb-3 border-b border-slate-100 justify-center pointer-events-none">
-                        <button onclick="window.ui.showLeaderboard('deadline', 'score')" id="lb-sub-score" class="px-4 py-2 rounded-full text-sm font-bold transition-all bg-indigo-600 text-white">Highest Score</button>
-                        <button onclick="window.ui.showLeaderboard('deadline', 'streak')" id="lb-sub-streak" class="px-4 py-2 rounded-full text-sm font-bold transition-all bg-slate-200 text-slate-700 hover:bg-slate-300">Longest Streak</button>
                     </div>
                     
                     <div id="leaderboard-list" class="flex flex-col flex-1 min-h-0 overflow-y-auto space-y-3">
@@ -586,7 +597,9 @@
 <script>
   if ('serviceWorker' in navigator) {
     window.addEventListener('load', () => {
-      const isLocalhost = ['localhost', '127.0.0.1'].includes(window.location.hostname);
+      const isLocalhost = window.location.hostname === 'localhost' || 
+                          window.location.hostname === '127.0.0.1' || 
+                          window.location.hostname.startsWith('192.168.');
 
       if (isLocalhost) {
         navigator.serviceWorker.getRegistrations().then((registrations) => {

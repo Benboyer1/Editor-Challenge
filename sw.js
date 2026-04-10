@@ -1,4 +1,4 @@
-const CACHE_NAME = 'editor-challenge-v2';
+const CACHE_NAME = 'editor-challenge-v4';
 const ASSETS_TO_CACHE = [
   './',
   './index.html',
@@ -32,11 +32,15 @@ self.addEventListener('activate', (event) => {
   self.clients.claim();
 });
 
-// Serve from cache if offline
+// Network-First Strategy (Always get the latest code if online, fall back to cache if offline)
 self.addEventListener('fetch', (event) => {
   event.respondWith(
-    caches.match(event.request).then((response) => {
-      return response || fetch(event.request);
+    fetch(event.request).then((networkResponse) => {
+      // If we have internet, return the fresh files!
+      return networkResponse;
+    }).catch(() => {
+      // If the network fails (offline), fall back to the cache so they can still play!
+      return caches.match(event.request);
     })
   );
 });

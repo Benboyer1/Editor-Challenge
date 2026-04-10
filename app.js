@@ -1,7 +1,6 @@
 import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
 import { getAuth, signInWithPopup, GoogleAuthProvider, onAuthStateChanged, signOut, updateProfile } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
-import { getFirestore, collection, addDoc, query, orderBy, limit, getDocs, where, getCountFromServer, setDoc, doc, getDoc, writeBatch } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
-import { getAnalytics, logEvent } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-analytics.js";
+import { getFirestore, collection, addDoc, query, orderBy, limit, getDocs, where, getCountFromServer, setDoc, doc, getDoc, writeBatch, deleteDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
 const firebaseConfig = {
   apiKey: "AIzaSyD_Krda4l_oZPKH3TiZuIagvIVfhbYjJIE",
@@ -14,8 +13,17 @@ const firebaseConfig = {
 };
 
 const firebaseApp = initializeApp(firebaseConfig);
-const analytics = getAnalytics(firebaseApp);
-window.analytics = analytics;
+
+// Dynamically import Analytics so tracker-blockers don't crash the app
+let analytics = null;
+import("https://www.gstatic.com/firebasejs/11.6.1/firebase-analytics.js").then((fbAnalytics) => {
+    analytics = fbAnalytics.getAnalytics(firebaseApp);
+    window.analytics = analytics;
+    window.logEvent = fbAnalytics.logEvent;
+}).catch((error) => {
+    console.warn("Analytics blocked by browser tracking protection. Game will continue safely.");
+});
+
 const auth = getAuth(firebaseApp);
 const db = getFirestore(firebaseApp);
 const provider = new GoogleAuthProvider();
@@ -114,31 +122,34 @@ const authEngine = {
 
         const existingProfile = cloneUserProfile(window.game.state.savedUserProfile || window.game.state.userProfile);
         const inputUsername = document.getElementById('profile-username-input')?.value?.trim() || '';
-        const username = inputUsername || existingProfile.username || 'Guest Player';
+        let username = inputUsername || existingProfile.username || 'Guest Player';
 
         // Get selected emoji and color from state (these should be set by UI functions)
         const selectedEmoji = window.game.state.userProfile.avatar;
         const selectedColor = window.game.state.userProfile.avatarColor;
         const publicTag = existingProfile.publicTag || await generateUniquePublicTag();
-        const hasChanges =
-            username !== existingProfile.username ||
-            selectedEmoji !== existingProfile.avatar ||
-            selectedColor !== existingProfile.avatarColor;
 
-        if (!hasChanges) {
-            window.ui.toggleModal('modal-profile', false);
-            return;
-        }
+        const usernameChanged = username !== existingProfile.username;
+        const avatarChanged = selectedEmoji !== existingProfile.avatar || selectedColor !== existingProfile.avatarColor;
 
         const lastChangeAt = toDateOrNull(existingProfile.lastProfileChangeAt);
-        if (!window.game.state.isAdmin && lastChangeAt && (Date.now() - lastChangeAt.getTime()) < PROFILE_CHANGE_COOLDOWN_MS) {
+        let newProfileChangeAt = existingProfile.lastProfileChangeAt;
+
+        if (usernameChanged && !window.game.state.isAdmin && lastChangeAt && (Date.now() - lastChangeAt.getTime()) < PROFILE_CHANGE_COOLDOWN_MS) {
             const nextChangeDate = new Date(lastChangeAt.getTime() + PROFILE_CHANGE_COOLDOWN_MS);
-            alert(`Profiles can only be updated once every 7 days. You can change yours again after ${nextChangeDate.toLocaleDateString()}.`);
-            return;
+            alert(`Usernames can only be changed once every 7 days. (Available after ${nextChangeDate.toLocaleDateString()}).\n\nYour avatar changes will still be saved!`);
+            username = existingProfile.username; // Revert the name change
+            if (!avatarChanged) {
+                const usernameInput = document.getElementById('profile-username-input');
+                if (usernameInput) usernameInput.value = username;
+                return;
+            }
+        } else if (username !== existingProfile.username) {
+            newProfileChangeAt = new Date();
         }
 
         try {
-            const changedAt = new Date();
+            const updatedAt = new Date();
             // Save profile to users collection with merge: true
             const userDocRef = doc(db, 'users', user.uid);
             await setDoc(userDocRef, {
@@ -146,25 +157,39 @@ const authEngine = {
                 avatar: selectedEmoji,
                 avatarColor: selectedColor,
                 publicTag,
-                lastProfileChangeAt: changedAt,
-                updatedAt: changedAt
+                lastProfileChangeAt: newProfileChangeAt || null,
+                updatedAt: updatedAt
             }, { merge: true });
 
             try {
-                const batch = writeBatch(db);
                 const gamesQuery = query(collection(db, 'games'), where('uid', '==', user.uid));
                 const querySnapshot = await getDocs(gamesQuery);
 
+                const batches = [];
+                let currentBatch = writeBatch(db);
+                let operationCount = 0;
+
                 querySnapshot.forEach((gameDoc) => {
-                    batch.update(gameDoc.ref, {
+                    currentBatch.update(gameDoc.ref, {
                         username,
                         avatar: selectedEmoji,
                         avatarColor: selectedColor,
                         publicTag
                     });
+                    operationCount++;
+
+                    if (operationCount === 490) { // Firestore limit is 500, chunking to be safe
+                        batches.push(currentBatch.commit());
+                        currentBatch = writeBatch(db);
+                        operationCount = 0;
+                    }
                 });
 
-                await batch.commit();
+                if (operationCount > 0) {
+                    batches.push(currentBatch.commit());
+                }
+
+                await Promise.all(batches);
             } catch (error) {
                 console.warn("Could not backfill past scores:", error);
             }
@@ -175,7 +200,7 @@ const authEngine = {
                 avatar: selectedEmoji,
                 avatarColor: selectedColor,
                 publicTag,
-                lastProfileChangeAt: changedAt
+                lastProfileChangeAt: newProfileChangeAt || null
             };
             window.game.state.savedUserProfile = cloneUserProfile(window.game.state.userProfile);
 
@@ -238,85 +263,6 @@ const updateAuthUI = (user) => {
         adminBadge?.classList.add('hidden');
     }
 };
-
-onAuthStateChanged(auth, async (user) => {
-    if (user) {
-        window.game.state.isAdmin = isAdminUser(user);
-        window.game.state.adminTestMode = user.uid ? localStorage.getItem(`editor-admin-test-mode:${user.uid}`) === 'true' : false;
-        updateAuthUI(user);
-        window.game.state.user = user;
-
-        try {
-            const docSnapshot = await getDoc(doc(db, 'users', user.uid));
-            if (docSnapshot.exists()) {
-                const profileData = docSnapshot.data();
-                window.game.state.userProfile = {
-                    username: profileData.username || user.displayName || 'Player',
-                    avatar: profileData.avatar || '👤',
-                    avatarColor: profileData.avatarColor || 'bg-gray-200',
-                    publicTag: profileData.publicTag || '',
-                    lastProfileChangeAt: profileData.lastProfileChangeAt || null
-                };
-                if (!window.game.state.userProfile.publicTag) {
-                    const publicTag = await generateUniquePublicTag();
-                    await setDoc(doc(db, 'users', user.uid), { publicTag }, { merge: true });
-                    window.game.state.userProfile.publicTag = publicTag;
-                }
-                window.game.state.savedUserProfile = cloneUserProfile(window.game.state.userProfile);
-                window.ui.updateHeaderProfile();
-                window.ui.updateAdminUI();
-            } else {
-                const publicTag = await generateUniquePublicTag();
-                window.game.state.userProfile = {
-                    username: user.displayName || "Player",
-                    avatar: "👤",
-                    avatarColor: "bg-gray-200",
-                    publicTag,
-                    lastProfileChangeAt: null
-                };
-                window.game.state.savedUserProfile = cloneUserProfile(window.game.state.userProfile);
-                await setDoc(doc(db, 'users', user.uid), {
-                    username: window.game.state.userProfile.username,
-                    avatar: window.game.state.userProfile.avatar,
-                    avatarColor: window.game.state.userProfile.avatarColor,
-                    publicTag,
-                    createdAt: new Date(),
-                    updatedAt: new Date()
-                }, { merge: true });
-                window.ui.updateHeaderProfile();
-                window.ui.updateAdminUI();
-                window.ui.toggleModal('modal-profile', true);
-            }
-        } catch (error) {
-            console.error("Profile fetch failed:", error);
-            window.game.state.userProfile = {
-                username: user.displayName || "Player",
-                avatar: "👤",
-                avatarColor: "bg-gray-200",
-                publicTag: '',
-                lastProfileChangeAt: null
-            };
-            window.game.state.savedUserProfile = cloneUserProfile(window.game.state.userProfile);
-            window.ui.updateHeaderProfile();
-            window.ui.updateAdminUI();
-        }
-    } else {
-        window.game.state.user = null;
-        window.game.state.isAdmin = false;
-        window.game.state.adminTestMode = false;
-        window.game.state.userProfile = {
-            username: 'Guest Player',
-            avatar: '👤',
-            avatarColor: 'bg-slate-200',
-            publicTag: '',
-            lastProfileChangeAt: null
-        };
-        window.game.state.savedUserProfile = cloneUserProfile(window.game.state.userProfile);
-        updateAuthUI(null);
-        window.ui.updateHeaderProfile();
-        window.ui.updateAdminUI();
-    }
-});
 
 /**
  * AUDIO ENGINE
@@ -725,6 +671,7 @@ window.game = {
         count: 0,
         globalTimeLeft: 60,
         globalTimer: null,
+        lastSavedDocId: null,
         userProfile: {
             username: 'Guest Player',
             avatar: '👤',
@@ -849,6 +796,7 @@ window.game = {
         this.state.paused = false;
         this.state.bentzyTriggered = false;
         this.state.globalTimeLeft = 60;
+        this.state.lastSavedDocId = null;
 
         // Clean up confetti immediately
         confetti.stop();
@@ -937,9 +885,9 @@ window.game = {
 
         // --- SILENT ANALYTICS TRACKING ---
         // Tracks performance without saving if you are in Admin Test Mode
-        if (window.analytics && !this.state.adminTestMode) {
+        if (window.analytics && window.logEvent && !this.state.adminTestMode) {
             try {
-                logEvent(window.analytics, 'question_answered', {
+                window.logEvent(window.analytics, 'question_answered', {
                     question_category: q.cat,
                     is_correct: isCorrect ? 'true' : 'false',
                     game_mode: this.state.mode
@@ -1085,7 +1033,9 @@ window.game = {
                     avatarColor: window.game.state.userProfile.avatarColor,
                     publicTag: window.game.state.userProfile.publicTag || ''
                 };
-                addDoc(collection(db, 'games'), gameData).catch((error) => {
+                addDoc(collection(db, 'games'), gameData).then((docRef) => {
+                    this.state.lastSavedDocId = docRef.id;
+                }).catch((error) => {
                     console.error('Firebase save error:', error);
                 });
             }
@@ -1105,8 +1055,8 @@ window.game = {
             });
 
             // Analytics
-            if (window.analytics) {
-                logEvent(window.analytics, 'level_end', {
+            if (window.analytics && window.logEvent) {
+                window.logEvent(window.analytics, 'level_end', {
                     game_mode: window.game.state.mode,
                     final_score: window.game.state.score,
                     max_streak: window.game.state.maxStreak || 0
@@ -1216,6 +1166,7 @@ window.ui = {
         } else if (mode === 'blitz') {
             rules.push({ title: "60-Second Rush", desc: "You have exactly one minute to answer as many as possible.", color: "orange" });
             rules.push({ title: "Infinite Lives", desc: "Mistakes won't end the game, but they will reset your streak.", color: "red" });
+            rules.push({ title: "Pro Tip", desc: "Remember, streaks multiply your points! It pays to be accurate, not just fast.", color: "amber" });
         } else if (mode === 'standard') {
             rules.push({ title: "No Time Limit", desc: "Take your time. Read carefully and make the right call.", color: "indigo" });
             rules.push({ title: "3 Lives", desc: "Three strikes and the game is over.", color: "red" });
@@ -1257,9 +1208,51 @@ window.ui = {
         document.getElementById('lives-display').innerText = window.game.state.lives;
         
         const badge = document.getElementById('streak-badge');
-        document.getElementById('streak-count').innerText = window.game.state.streak;
-        if (window.game.state.streak >= 3) badge.classList.remove('opacity-0');
-        else badge.classList.add('opacity-0');
+        const blitzDisplay = document.getElementById('blitz-streak-display');
+        const blitzCount = document.getElementById('blitz-streak-count');
+        const streakCount = document.getElementById('streak-count');
+        const multBadge = document.getElementById('streak-multiplier');
+        const blitzMult = document.getElementById('blitz-streak-multiplier');
+        
+        const currentStreak = window.game.state.streak;
+        if (streakCount) streakCount.innerText = currentStreak;
+        
+        let multiplier = 1;
+        if (currentStreak >= 10) multiplier = 5;
+        else if (currentStreak >= 3) multiplier = 2;
+        
+        if (multBadge) {
+            if (multiplier > 1) {
+                multBadge.innerText = `${multiplier}x Pts`;
+                multBadge.classList.remove('hidden');
+            } else {
+                multBadge.classList.add('hidden');
+            }
+        }
+        
+        if (blitzMult) {
+            if (multiplier > 1) {
+                blitzMult.innerText = `${multiplier}x Pts`;
+                blitzMult.classList.remove('hidden');
+            } else {
+                blitzMult.classList.add('hidden');
+            }
+        }
+        
+        if (window.game.state.mode === 'blitz') {
+            badge.classList.add('hidden');
+            if (blitzDisplay && blitzCount) {
+                blitzDisplay.classList.remove('hidden');
+                blitzCount.innerText = window.game.state.streak;
+                blitzDisplay.style.transform = 'scale(1.1)';
+                setTimeout(() => { blitzDisplay.style.transform = 'scale(1)'; }, 150);
+            }
+        } else {
+            badge.classList.remove('hidden');
+            if (blitzDisplay) blitzDisplay.classList.add('hidden');
+            if (window.game.state.streak >= 3) badge.classList.remove('opacity-0');
+            else badge.classList.add('opacity-0');
+        }
         
         document.getElementById('game-mode-display').innerText = window.game.state.mode;
         this.updateAudioToggle();
@@ -1287,10 +1280,6 @@ window.ui = {
     },
 
     handleLeaderboardButton: async function() {
-        if (!auth.currentUser) {
-            alert('Sign in to view leaderboards');
-            return;
-        }
         try {
             await this.showLeaderboard();
         } catch (error) {
@@ -1379,19 +1368,28 @@ window.ui = {
         fb.className = isCorrect ? "block text-center font-bold mt-4 text-green-600 text-xl pop-in" : "block text-center font-bold mt-4 text-red-600 text-xl pop-in";
         
         const txt = document.getElementById('q-text');
-        txt.innerHTML += `<br><br><span class='text-sm text-slate-500 font-sans border-t pt-2 block dark:text-slate-400 dark:border-slate-700'>${explanation}</span>`;
-        
-        const btnLearn = document.createElement('button');
-        btnLearn.id = 'btn-learn-more';
-        btnLearn.className = 'mt-3 mx-auto block w-full max-w-xs px-4 py-2 rounded-full bg-indigo-600 text-white text-sm font-bold hover:bg-indigo-700 transition';
-        btnLearn.innerText = 'Learn more about this concept';
-        btnLearn.onclick = () => window.ui.toggleQuestionTypeDetail();
-        fb.appendChild(btnLearn);
-
-        document.getElementById('feedback-detail').classList.add('hidden');
-
         const btn = document.getElementById('btn-next');
-        btn.classList.remove('hidden');
+        
+        if (window.game.state.mode !== 'blitz') {
+            txt.innerHTML += `<br><br><span class='text-sm text-slate-500 font-sans border-t pt-2 block dark:text-slate-400 dark:border-slate-700'>${explanation}</span>`;
+            
+            const btnLearn = document.createElement('button');
+            btnLearn.id = 'btn-learn-more';
+            btnLearn.className = 'mt-3 mx-auto block w-full max-w-xs px-4 py-2 rounded-full bg-indigo-600 text-white text-sm font-bold hover:bg-indigo-700 transition';
+            btnLearn.innerText = 'Learn more about this concept';
+            btnLearn.onclick = () => window.ui.toggleQuestionTypeDetail();
+            fb.appendChild(btnLearn);
+
+            document.getElementById('feedback-detail').classList.add('hidden');
+            btn.classList.remove('hidden');
+        } else {
+            btn.classList.add('hidden');
+            setTimeout(() => {
+                if (window.game.state.mode === 'blitz' && window.game.state.globalTimeLeft > 0 && !window.game.state.paused) {
+                    window.game.nextQuestion();
+                }
+            }, 500); // Half-second pause to see the result
+        }
     },
 
     updateProgressBar: function(current) {
@@ -1438,13 +1436,36 @@ window.ui = {
             countEl.innerText = `${window.game.state.count}`;
         }
 
+        // Show guest login prompt if unregistered and scored > 0
+        const guestPrompt = document.getElementById('gameover-guest-prompt');
+        if (guestPrompt) {
+            if (!window.game.state.user && window.game.state.score > 0 && !window.game.state.adminTestMode) {
+                guestPrompt.classList.remove('hidden');
+            } else {
+                guestPrompt.classList.add('hidden');
+            }
+        }
+
         // Show install prompt gently after gameplay finishes (delayed to wait for endgame animations)
         setTimeout(() => {
             this.showInstallToastIfNeeded();
         }, 3500);
     },
 
-    showLeaderboard: async function(mode = 'standard', sortBy = 'score') {
+    deleteScore: async function(docId, mode, lockMode) {
+        if (!window.game.state.isAdmin) return;
+        if (!confirm('Are you sure you want to delete this score? This cannot be undone.')) return;
+        
+        try {
+            await deleteDoc(doc(db, 'games', docId));
+            this.showLeaderboard(mode, lockMode); // Refresh leaderboard instantly
+        } catch (error) {
+            console.error('Error deleting score:', error);
+            alert('Failed to delete score.');
+        }
+    },
+
+    showLeaderboard: async function(mode = 'standard', lockMode = false) {
         this.toggleModal('leaderboard-modal', true);
         const listEl = document.getElementById('leaderboard-list');
         listEl.innerHTML = `
@@ -1505,46 +1526,21 @@ window.ui = {
             }
         });
 
-        // Preserve sub-nav height across modes to avoid modal layout shifts
-        const subNav = document.getElementById('deadline-sub-nav');
-        if (mode === 'deadline') {
-            subNav.classList.remove('invisible', 'pointer-events-none');
-        } else {
-            subNav.classList.add('invisible', 'pointer-events-none');
+        // Handle tab visibility for endgame
+        const tabNav = document.getElementById('leaderboard-tab-nav');
+        if (tabNav) {
+            if (lockMode) tabNav.classList.add('hidden');
+            else tabNav.classList.remove('hidden');
         }
-
-        // Update active sub-nav button styling
-        const subTabs = ['score', 'streak'];
-        subTabs.forEach(subTab => {
-            const subBtn = document.getElementById(`lb-sub-${subTab}`);
-            if (subBtn) {
-                if (subTab === sortBy) {
-                    subBtn.className = 'px-4 py-2 rounded-full text-sm font-bold transition-all bg-indigo-600 text-white shadow-sm shadow-indigo-500/20';
-                } else {
-                    subBtn.className = 'px-4 py-2 rounded-full text-sm font-bold transition-all bg-slate-200 text-slate-700 hover:bg-slate-300 dark:bg-slate-800 dark:text-slate-200 dark:hover:bg-slate-700';
-                }
-            }
-        });
 
         try {
             let q;
-            let sortField = 'score';
-            let labelField = 'score';
             let labelSuffix = ' pts';
-            let isStreakSort = false;
 
             if (mode === 'standard') {
                 q = query(collection(db, 'games'), where('mode', '==', 'standard'), orderBy('score', 'desc'), limit(10));
             } else if (mode === 'deadline') {
-                if (sortBy === 'streak') {
-                    q = query(collection(db, 'games'), where('mode', '==', 'deadline'), orderBy('maxStreak', 'desc'), limit(10));
-                    sortField = 'maxStreak';
-                    labelField = 'maxStreak';
-                    labelSuffix = '';
-                    isStreakSort = true;
-                } else {
-                    q = query(collection(db, 'games'), where('mode', '==', 'deadline'), orderBy('score', 'desc'), limit(10));
-                }
+                q = query(collection(db, 'games'), where('mode', '==', 'deadline'), orderBy('score', 'desc'), limit(10));
             } else if (mode === 'blitz') {
                 q = query(collection(db, 'games'), where('mode', '==', 'blitz'), orderBy('score', 'desc'), limit(10));
             }
@@ -1553,31 +1549,144 @@ window.ui = {
             
             let html = '<div class="space-y-3">';
             let rank = 1;
+            let userInTop10 = false;
+            let currentRunInTop10 = false;
+            
             querySnapshot.forEach((doc) => {
                 const data = doc.data();
+                if (window.game.state.user && data.uid === window.game.state.user.uid) {
+                    userInTop10 = true;
+                }
+                const isCurrentRun = window.game.state.lastSavedDocId && doc.id === window.game.state.lastSavedDocId;
+                if (isCurrentRun) currentRunInTop10 = true;
+                
                 const playerName = data.username || data.displayName || "Anonymous Editor";
                 const playerAvatar = data.avatar || "👤";
                 const playerBg = data.avatarColor || "bg-gray-200";
                 const playerTag = data.publicTag || '';
                 const medal = rank === 1 ? '🥇' : rank === 2 ? '🥈' : rank === 3 ? '🥉' : '🏅';
-                const displayValue = isStreakSort ? data.maxStreak : data.score;
-                const displayIcon = isStreakSort ? '🔥' : '';
+                const displayValue = data.score;
+                const displayIcon = '';
+                
+                const containerClasses = isCurrentRun
+                    ? "flex items-center gap-4 p-4 rounded-lg bg-indigo-50 border border-indigo-200 shadow-md animate-pulse dark:bg-indigo-900/40 dark:border-indigo-500/50"
+                    : "flex items-center gap-4 p-4 bg-slate-50 rounded-lg dark:bg-slate-800/80";
+                const badgeHtml = isCurrentRun 
+                    ? `<span class="ml-2 px-1.5 py-0.5 rounded-md text-[10px] font-extrabold bg-indigo-600 text-white uppercase tracking-wider shadow-sm">Just Now</span>` 
+                    : '';
+                    
+                const nameColor = isCurrentRun ? "text-indigo-900 dark:text-indigo-50" : "text-slate-900 dark:text-slate-100";
+                const tagColor = isCurrentRun ? "text-indigo-500 dark:text-indigo-300" : "text-slate-400 dark:text-slate-500";
+                const scoreColor = isCurrentRun ? "text-indigo-700 dark:text-indigo-200" : "text-indigo-600 dark:text-indigo-400";
+                const rankClass = isCurrentRun ? "bg-indigo-200 text-indigo-800 dark:bg-indigo-500/50 dark:text-indigo-100" : "bg-indigo-100 text-indigo-600 dark:bg-indigo-500/20 dark:text-indigo-300";
+
                 html += `
-                    <div class="flex items-center gap-4 p-4 bg-slate-50 rounded-lg dark:bg-slate-800/80">
-                        <div class="flex-shrink-0 w-8 h-8 rounded-full bg-indigo-100 text-indigo-600 flex items-center justify-center font-bold text-sm dark:bg-indigo-500/20 dark:text-indigo-300">${rank}</div>
+                    <div class="${containerClasses}">
+                        <div class="flex-shrink-0 w-8 h-8 rounded-full flex items-center justify-center font-bold text-sm ${rankClass}">${rank}</div>
                         <div class="w-10 h-10 rounded-full flex items-center justify-center text-lg ${playerBg}">${playerAvatar}</div>
                         <div class="flex-1 min-w-0">
-                            <p class="font-bold text-slate-900 truncate dark:text-slate-100">${playerName}</p>
-                            ${playerTag ? `<p class="text-xs font-semibold uppercase tracking-[0.18em] text-slate-400 dark:text-slate-500">${playerTag}</p>` : ''}
+                            <p class="font-bold truncate flex items-center ${nameColor}">${playerName}${badgeHtml}</p>
+                            ${playerTag ? `<p class="text-xs font-semibold uppercase tracking-[0.18em] ${tagColor}">${playerTag}</p>` : ''}
                         </div>
                         <div class="flex items-center gap-2">
                             <span class="text-2xl">${medal}</span>
-                            <span class="font-bold text-indigo-600">${displayIcon} ${displayValue}${labelSuffix}</span>
+                            <span class="font-bold ${scoreColor}">${displayIcon} ${displayValue}${labelSuffix}</span>
+                            ${window.game.state.isAdmin ? `<button onclick="window.ui.deleteScore('${doc.id}', '${mode}', ${lockMode})" class="ml-2 opacity-50 hover:opacity-100 text-red-500 hover:text-red-700 transition-opacity p-1" title="Delete Score">
+                                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path></svg>
+                            </button>` : ''}
                         </div>
                     </div>
                 `;
                 rank++;
             });
+
+        // Handle the bottom pinned rank
+        if (window.game.state.user) {
+            let bottomPinData = null;
+            let showBottomPin = false;
+
+            if (lockMode && window.game.state.lastSavedDocId) {
+                // Endgame Leaderboard: Show the CURRENT run's rank, ignoring all-time high score
+                if (!currentRunInTop10) {
+                    showBottomPin = true;
+                    bottomPinData = {
+                        score: window.game.state.score,
+                        username: window.game.state.userProfile.username,
+                        avatar: window.game.state.userProfile.avatar,
+                        avatarColor: window.game.state.userProfile.avatarColor,
+                        publicTag: window.game.state.userProfile.publicTag || '',
+                        isCurrentRun: true
+                    };
+                }
+            } else if (!userInTop10) {
+                // Main Menu: Show all-time personal best for this mode
+                try {
+                    // Local filter method to bypass Firebase composite index requirements
+                    const userQ = query(collection(db, 'games'), where('uid', '==', window.game.state.user.uid));
+                    const userSnapshot = await getDocs(userQ);
+                    
+                    let bestGameData = null;
+                    userSnapshot.forEach(d => {
+                        const game = d.data();
+                        if (game.mode === mode) {
+                            if (!bestGameData || game.score > bestGameData.score) {
+                                bestGameData = game;
+                            }
+                        }
+                    });
+                    
+                    if (bestGameData) {
+                        showBottomPin = true;
+                        bottomPinData = bestGameData;
+                        bottomPinData.isCurrentRun = false;
+                    }
+                } catch (err) {
+                    console.error("Error fetching user's score for leaderboard", err);
+                }
+            }
+
+            if (showBottomPin && bottomPinData) {
+                try {
+                    // Calculate exact global rank
+                    const rankQ = query(collection(db, 'games'), where('mode', '==', mode), where('score', '>', bottomPinData.score));
+                    const rankSnap = await getCountFromServer(rankQ);
+                    const userRank = rankSnap.data().count + 1;
+
+                    const playerName = bottomPinData.username || bottomPinData.displayName || "Anonymous Editor";
+                    const playerAvatar = bottomPinData.avatar || "👤";
+                    const playerBg = bottomPinData.avatarColor || "bg-gray-200";
+                    const playerTag = bottomPinData.publicTag || '';
+                    const displayValue = bottomPinData.score;
+                    
+                    const containerClasses = bottomPinData.isCurrentRun
+                        ? "flex items-center gap-4 p-4 rounded-lg bg-indigo-50 border border-indigo-200 shadow-md animate-pulse dark:bg-indigo-900/40 dark:border-indigo-500/50"
+                        : "flex items-center gap-4 p-4 rounded-lg bg-indigo-50 border border-indigo-200 shadow-md dark:bg-indigo-900/40 dark:border-indigo-500/50";
+                        
+                    const badgeHtml = bottomPinData.isCurrentRun 
+                        ? `<span class="ml-2 px-1.5 py-0.5 rounded-md text-[10px] font-extrabold bg-indigo-600 text-white uppercase tracking-wider shadow-sm">Just Now</span>` 
+                        : `<span class="ml-2 px-1.5 py-0.5 rounded-md text-[10px] font-extrabold bg-indigo-600 text-white uppercase tracking-wider shadow-sm">You</span>`;
+
+                    html += `
+                        <div class="flex justify-center py-1">
+                            <span class="text-slate-300 dark:text-slate-600 font-black tracking-widest">•••</span>
+                        </div>
+                        <div class="${containerClasses}">
+                            <div class="flex-shrink-0 w-8 h-8 rounded-full flex items-center justify-center font-bold text-sm bg-indigo-200 text-indigo-800 dark:bg-indigo-500/50 dark:text-indigo-100">${userRank}</div>
+                            <div class="w-10 h-10 rounded-full flex items-center justify-center text-lg ${playerBg}">${playerAvatar}</div>
+                            <div class="flex-1 min-w-0">
+                                <p class="font-bold truncate flex items-center text-indigo-900 dark:text-indigo-50">${playerName}${badgeHtml}</p>
+                                ${playerTag ? `<p class="text-xs font-semibold uppercase tracking-[0.18em] text-indigo-500 dark:text-indigo-300">${playerTag}</p>` : ''}
+                            </div>
+                            <div class="flex items-center gap-2">
+                                <span class="font-bold text-indigo-700 dark:text-indigo-200">${displayValue}${labelSuffix}</span>
+                            </div>
+                        </div>
+                    `;
+                } catch (err) {
+                    console.error("Error fetching rank", err);
+                }
+            }
+        }
 
             if (querySnapshot.empty) {
                 html = `
@@ -1770,8 +1879,10 @@ window.ui = {
         });
         
         // Add border to selected button
-        buttonEl.classList.remove('border-transparent');
-        buttonEl.classList.add('border-indigo-500');
+        if (buttonEl) {
+            buttonEl.classList.remove('border-transparent');
+            buttonEl.classList.add('border-indigo-500');
+        }
         
         // Update state
         window.game.state.userProfile.avatar = emoji;
@@ -1789,8 +1900,10 @@ window.ui = {
         });
         
         // Add border-indigo-500 to selected swatch
-        buttonEl.classList.remove('border-slate-200');
-        buttonEl.classList.add('border-indigo-500');
+        if (buttonEl) {
+            buttonEl.classList.remove('border-slate-200');
+            buttonEl.classList.add('border-indigo-500');
+        }
         
         // Update state
         window.game.state.userProfile.avatarColor = colorClass;
@@ -1826,8 +1939,93 @@ window.ui = {
     }
 };
 
+// Listen for Firebase Auth State Changes (Safe to run now that window.game and window.ui exist)
+onAuthStateChanged(auth, async (user) => {
+    if (user) {
+        window.game.state.isAdmin = isAdminUser(user);
+        window.game.state.adminTestMode = user.uid ? localStorage.getItem(`editor-admin-test-mode:${user.uid}`) === 'true' : false;
+        updateAuthUI(user);
+        window.game.state.user = user;
+
+        try {
+            const docSnapshot = await getDoc(doc(db, 'users', user.uid));
+            if (docSnapshot.exists()) {
+                const profileData = docSnapshot.data();
+                window.game.state.userProfile = {
+                    username: profileData.username || user.displayName || 'Player',
+                    avatar: profileData.avatar || '👤',
+                    avatarColor: profileData.avatarColor || 'bg-gray-200',
+                    publicTag: profileData.publicTag || '',
+                    lastProfileChangeAt: profileData.lastProfileChangeAt || null
+                };
+                if (!window.game.state.userProfile.publicTag) {
+                    const publicTag = await generateUniquePublicTag();
+                    await setDoc(doc(db, 'users', user.uid), { publicTag }, { merge: true });
+                    window.game.state.userProfile.publicTag = publicTag;
+                }
+                window.game.state.savedUserProfile = cloneUserProfile(window.game.state.userProfile);
+                window.ui.updateHeaderProfile();
+                window.ui.updateAdminUI();
+            } else {
+                const publicTag = await generateUniquePublicTag();
+                window.game.state.userProfile = {
+                    username: user.displayName || "Player",
+                    avatar: "👤",
+                    avatarColor: "bg-gray-200",
+                    publicTag,
+                    lastProfileChangeAt: null
+                };
+                window.game.state.savedUserProfile = cloneUserProfile(window.game.state.userProfile);
+                await setDoc(doc(db, 'users', user.uid), {
+                    username: window.game.state.userProfile.username,
+                    avatar: window.game.state.userProfile.avatar,
+                    avatarColor: window.game.state.userProfile.avatarColor,
+                    publicTag,
+                    createdAt: new Date(),
+                    updatedAt: new Date()
+                }, { merge: true });
+                window.ui.updateHeaderProfile();
+                window.ui.updateAdminUI();
+                window.ui.toggleModal('modal-profile', true);
+            }
+        } catch (error) {
+            console.error("Profile fetch failed:", error);
+            window.game.state.userProfile = {
+                username: user.displayName || "Player",
+                avatar: "👤",
+                avatarColor: "bg-gray-200",
+                publicTag: '',
+                lastProfileChangeAt: null
+            };
+            window.game.state.savedUserProfile = cloneUserProfile(window.game.state.userProfile);
+            window.ui.updateHeaderProfile();
+            window.ui.updateAdminUI();
+        }
+    } else {
+        window.game.state.user = null;
+        window.game.state.isAdmin = false;
+        window.game.state.adminTestMode = false;
+        window.game.state.userProfile = {
+            username: 'Guest Player',
+            avatar: '👤',
+            avatarColor: 'bg-slate-200',
+            publicTag: '',
+            lastProfileChangeAt: null
+        };
+        window.game.state.savedUserProfile = cloneUserProfile(window.game.state.userProfile);
+        updateAuthUI(null);
+        window.ui.updateHeaderProfile();
+        window.ui.updateAdminUI();
+    }
+});
+
 // Initialize
-document.addEventListener('DOMContentLoaded', () => {
+const initApp = () => {
     window.ui.initTheme();
     window.game.init();
-});
+};
+if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', initApp);
+} else {
+    initApp();
+}
