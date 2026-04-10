@@ -5,6 +5,20 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>Editor Challenge | Boyer Games</title>
     
+    <script>
+        window.tailwind = window.tailwind || {};
+        window.tailwind.config = {
+            darkMode: 'class'
+        };
+        (() => {
+            const storedTheme = localStorage.getItem('editor-theme');
+            const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+            if (storedTheme === 'dark' || (!storedTheme && prefersDark)) {
+                document.documentElement.classList.add('dark');
+            }
+        })();
+    </script>
+
     <!-- Tailwind CSS -->
     <script src="https://cdn.tailwindcss.com"></script>
     
@@ -22,8 +36,7 @@
     <meta name="theme-color" content="#000000">
     <link rel="apple-touch-icon" href="assets/icon-192.png">
 </head>
-<body class="h-[100dvh] w-screen text-slate-800">
-
+<body class="h-[100dvh] w-screen text-slate-800 transition-colors duration-300 dark:text-slate-100">
     <!-- AUDIO ENGINE (Invisible) -->
     <div id="audio-init" class="hidden"></div>
 
@@ -32,7 +45,7 @@
 
     <!-- TOAST NOTIFICATION -->
     <div id="toast" class="fixed top-24 left-1/2 transform -translate-x-1/2 bg-indigo-600 text-white px-6 py-3 rounded-lg shadow-xl z-[60] transition-all duration-300 opacity-0 translate-y-[-20px] pointer-events-none flex items-center gap-2 w-max max-w-[90%]">
-        <span class="text-2xl">🎩</span>
+        <svg class="w-5 h-5 flex-shrink-0" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2c-5.33 4.55-8 6.5-8 9 0 2.5 1.5 5 4 5.5-1 2-2 4-2 5.5 0 3 2.24 5 6 5s6-2 6-5c0-1.5-1-3.5-2-5.5 2.5-.5 4-3 4-5.5 0-2.5-2.67-4.45-8-9zm2 16h-4v2h4v-2z"/></svg>
         <div>
             <h4 class="font-bold text-sm">Easter Egg Unlocked!</h4>
             <p class="text-xs">Bentzy Approves of Your Grammatical Skills!</p>
@@ -40,7 +53,7 @@
     </div>
 
     <!-- APP CONTAINER -->
-    <div id="app" class="relative h-full w-full flex flex-col max-w-lg mx-auto bg-slate-50 shadow-2xl overflow-hidden">
+    <div id="app" class="relative h-full w-full flex flex-col max-w-lg mx-auto bg-slate-50 shadow-2xl overflow-hidden transition-colors duration-300 dark:bg-slate-950 dark:shadow-[0_30px_60px_rgba(2,6,23,0.5)]">
 
         <!-- ==================== COUNTDOWN OVERLAY ==================== -->
         <div id="screen-countdown" class="hidden absolute inset-0 z-[60] bg-slate-900/90 backdrop-blur-sm flex-col items-center justify-center">
@@ -49,10 +62,12 @@
         </div>
 
         <!-- ==================== USER SIDEBAR ==================== -->
-        <div id="user-sidebar" class="fixed top-0 left-0 w-64 h-full bg-white shadow-2xl z-50 transform -translate-x-full transition-transform duration-300">
+        <div id="user-sidebar" class="fixed top-0 left-0 w-64 h-full bg-white shadow-2xl z-50 transform -translate-x-full transition-transform duration-300 dark:text-slate-200 dark:border-r dark:border-slate-500/70">
             <div class="flex items-center justify-between p-4 border-b border-slate-200">
                 <div class="text-lg font-semibold text-slate-900">Your Profile</div>
-                <button onclick="window.ui.closeSidebar()" class="text-2xl text-slate-500 hover:text-slate-900">×</button>
+                <button onclick="window.ui.closeSidebar()" class="text-slate-500 hover:text-slate-900 p-2 rounded-full transition hover:bg-slate-100" aria-label="Close sidebar">
+                    <svg class="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+                </button>
             </div>
             <div class="p-6 space-y-6">
                 <div id="guest-ui" class="flex flex-col items-center gap-3">
@@ -68,47 +83,74 @@
 
                 <div id="logged-in-ui" class="hidden space-y-6">
                     <div class="flex flex-col items-center gap-3">
-                        <div class="w-24 h-24 rounded-full overflow-hidden border border-slate-200">
-                            <img id="sidebar-avatar" class="w-full h-full object-cover" src="" alt="User avatar">
-                        </div>
+                        <div id="sidebar-avatar" class="w-20 h-20 rounded-full flex items-center justify-center text-4xl shadow-md mx-auto mb-2"></div>
                         <div class="text-center">
                             <p class="text-sm text-slate-500 uppercase tracking-[0.2em]">Signed in as</p>
-                            <p id="sidebar-user-name" class="mt-2 text-lg font-bold text-slate-900">Player</p>
+                            <div class="flex items-center justify-center gap-2 mt-2">
+                                <p id="sidebar-username" class="text-lg font-bold text-slate-900">Player</p>
+                                <span id="sidebar-admin-badge" class="hidden px-2 py-0.5 rounded text-[10px] font-bold bg-purple-100 text-purple-700 border border-purple-200 uppercase tracking-wider dark:bg-purple-500/20 dark:text-purple-300 dark:border-purple-500/30">Admin</span>
+                            </div>
                         </div>
                     </div>
 
-                    <div class="space-y-3">
-                        <label class="text-sm font-semibold text-slate-700">Change Name</label>
-                        <input id="sidebar-name-input" type="text" placeholder="New display name" class="w-full rounded-2xl border border-slate-200 px-4 py-3 text-sm shadow-sm focus:outline-none focus:ring-2 focus:ring-indigo-500" />
-                        <button onclick="window.authEngine.updateName()" class="w-full rounded-full bg-indigo-600 px-4 py-3 text-sm font-semibold text-white shadow-lg shadow-indigo-200/40 transition hover:bg-indigo-700">Update</button>
-                    </div>
 
-                    <button onclick="window.ui.toggleDarkMode()" class="w-full rounded-full border border-slate-200 bg-slate-100 px-4 py-3 text-sm font-semibold text-slate-700 shadow-sm transition hover:bg-slate-200">Toggle Dark Mode</button>
+
+                    <button onclick="window.ui.toggleModal('modal-profile', true)" class="w-full rounded-full border border-indigo-300 bg-indigo-50 px-4 py-3 text-sm font-semibold text-indigo-600 shadow-sm transition hover:bg-indigo-100 flex items-center justify-center gap-2">
+                        <svg class="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path><circle cx="9" cy="7" r="4"></circle><path d="M23 21v-2a4 4 0 0 0-3-3.87"></path><path d="M16 3.13a4 4 0 0 1 0 7.75"></path></svg>
+                        Edit Profile
+                    </button>
+
+                    <button onclick="window.ui.toggleDarkMode()" class="w-full rounded-full border border-slate-200 bg-slate-100 px-4 py-3 text-sm font-semibold text-slate-700 shadow-sm transition hover:bg-slate-200 flex items-center justify-center gap-2">
+                        <svg class="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3a7 7 0 0 0 9.79 9.79z"></path></svg>
+                        Toggle Dark Mode
+                    </button>
+
+                    <button id="sidebar-install-btn" onclick="window.ui.handleSidebarInstall()" class="hidden w-full rounded-full border border-blue-300 bg-blue-50 px-4 py-3 text-sm font-semibold text-blue-600 shadow-sm transition hover:bg-blue-100 flex items-center justify-center gap-2"><svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>Install App</button>
+
+                    <!-- Admin Panel -->
+                    <div id="admin-panel" class="hidden mt-6 pt-6 border-t border-slate-200 dark:border-slate-700/50">
+                        <div class="flex items-center gap-2 mb-3">
+                            <svg class="w-4 h-4 text-purple-600 dark:text-purple-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path></svg>
+                            <h4 class="text-xs font-bold text-slate-500 uppercase tracking-wider dark:text-slate-400">Admin Controls</h4>
+                        </div>
+                        <div class="bg-purple-50 rounded-xl p-4 border border-purple-100 dark:bg-purple-950/20 dark:border-purple-800/30">
+                            <p id="admin-email" class="text-xs font-mono text-purple-700 mb-3 truncate dark:text-purple-300"></p>
+                            <label class="flex items-center gap-3 cursor-pointer group">
+                                <div class="relative">
+                                    <input type="checkbox" id="admin-test-mode-toggle" class="sr-only peer" onchange="window.ui.toggleAdminTestMode(this.checked)">
+                                    <div class="w-9 h-5 bg-purple-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-purple-600 dark:bg-slate-700 dark:peer-checked:bg-purple-500"></div>
+                                </div>
+                                <span id="admin-test-mode-label" class="text-xs font-semibold text-purple-800 dark:text-purple-200 leading-tight">Test Mode Off</span>
+                            </label>
+                        </div>
+                    </div>
                 </div>
             </div>
             <div class="absolute bottom-0 left-0 right-0 p-4">
                 <div id="logged-in-ui-bottom" class="hidden">
-                    <button onclick="window.authEngine.logout()" class="w-full rounded-full bg-red-600 px-4 py-3 text-sm font-semibold text-white shadow-lg shadow-red-200/40 transition hover:bg-red-700">Logout</button>
+                    <button onclick="window.authEngine.logout()" class="w-full rounded-full bg-red-600 px-4 py-3 text-sm font-semibold text-white shadow-lg shadow-red-200/40 transition hover:bg-red-700 flex items-center justify-center gap-2">
+                        <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"></path><polyline points="16 17 21 12 16 7"></polyline><line x1="21" y1="12" x2="9" y2="12"></line></svg>
+                        Logout
+                    </button>
                 </div>
             </div>
         </div>
 
         <!-- ==================== HOME SCREEN ==================== -->
-        <div id="screen-home" class="absolute inset-0 z-20 bg-slate-50 flex flex-col">
+        <div id="screen-home" class="absolute inset-0 z-20 bg-slate-50 flex flex-col dark:bg-slate-950">
             
             <!-- Header -->
-            <header class="absolute top-0 left-0 right-0 z-30 flex justify-between items-center w-full px-4 py-4 bg-white/95 backdrop-blur-xl border-b border-slate-200 shadow-sm">
+            <header class="absolute top-0 left-0 right-0 z-30 flex justify-between items-center w-full px-4 py-4 bg-white bg-opacity-95 backdrop-blur-xl border-b border-slate-200 shadow-sm dark:border-slate-500/70 dark:text-slate-200">
                 <div class="flex items-center gap-3">
-                    <button id="btn-user-profile" onclick="window.ui.openSidebar()" class="w-12 h-12 rounded-full overflow-hidden border border-slate-200 shadow-sm bg-slate-100 focus:outline-none" aria-label="Open profile sidebar">
-                        <img id="header-avatar" class="w-full h-full object-cover" src="data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMjQiIGhlaWdodD0iMjQiIHZpZXdCb3g9IjAgMCAyNCAyNCIgZmlsbD0ibm9uZSIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj4KPHBhdGggZD0iTTEyIDEyYzIuMjEgMCA0LTEuNzkgNC00cy0xLjc5LTQtNC00LTQgMS43OS00IDQgMS43OSA0IDQgNHptMCAyYy0yLjY3IDAtOCAxLjM0LTggNFYyMWgxNnYtMmMwLTIuNjYtNS4zMy00LTgtNHoiIGZpbGw9IiM5Y2E0YWYiLz4KPC9zdmc+" alt="Guest avatar">
+                    <button id="btn-user-profile" onclick="window.ui.openSidebar()" class="flex items-center gap-2 focus:outline-none" aria-label="Open profile sidebar">
+                        <div id="header-avatar" class="w-10 h-10 rounded-full flex items-center justify-center text-xl shadow-sm bg-slate-200">👤</div>
+                        <span id="header-username" class="text-sm font-semibold text-slate-800 max-w-[80px] truncate">Guest Player</span>
                     </button>
                 </div>
                 <div class="flex items-center gap-3">
-                    <button id="btn-leaderboard-home" onclick="window.ui.handleLeaderboardButton()" class="w-11 h-11 rounded-full border border-slate-200 bg-white shadow-sm text-slate-600 hover:bg-slate-50 transition flex items-center justify-center" aria-label="Leaderboard">
-                        🏆
-                    </button>
-                    <button id="btn-sound-toggle-home" onclick="window.game.toggleSoundMute()" class="w-11 h-11 rounded-full border border-slate-200 bg-white shadow-sm text-slate-600 hover:bg-slate-50 transition flex items-center justify-center" aria-label="Toggle sound">
-                        <span id="audio-toggle-icon-home">🔊</span>
+                    <button id="btn-leaderboard-home" onclick="window.ui.handleLeaderboardButton()" class="w-11 h-11 rounded-full border border-slate-200 bg-white shadow-sm text-slate-600 hover:bg-slate-50 transition flex items-center justify-center text-xl dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200 dark:hover:bg-slate-800" aria-label="Leaderboard">🏆</button>
+                    <button id="btn-sound-toggle-home" onclick="window.game.toggleSoundMute()" class="w-11 h-11 rounded-full border border-slate-200 bg-white shadow-sm text-slate-600 hover:bg-slate-50 transition flex items-center justify-center dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200 dark:hover:bg-slate-800" aria-label="Toggle sound">
+                        <span id="audio-toggle-icon-home" class="flex items-center justify-center w-6 h-6"><svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="w-6 h-6"><path stroke-linecap="round" stroke-linejoin="round" d="M19.114 5.636a9 9 0 010 12.728M16.463 8.288a5.25 5.25 0 010 7.424M6.75 8.25l4.72-4.72a.75.75 0 011.28.53v15.88a.75.75 0 01-1.28.53l-4.72-4.72H4.51c-.88 0-1.704-.507-1.938-1.354A9.01 9.01 0 012.25 12c0-.83.112-1.633.322-2.396C2.806 8.756 3.63 8.25 4.51 8.25H6.75z" /></svg></span>
                     </button>
                 </div>
             </header>
@@ -117,46 +159,46 @@
             <main class="flex-grow flex flex-col items-center justify-center p-6 pt-24 space-y-8">
             
             <div class="text-center space-y-2 mb-4">
-                <h1 class="text-4xl font-extrabold text-slate-900 tracking-tight">Editor's<br><span class="text-indigo-600">Challenge</span></h1>
-                <p class="text-slate-500 font-serif italic mt-2">"Stet. Let it stand."</p>
+                <h1 class="text-4xl font-extrabold text-slate-900 tracking-tight dark:text-slate-50">Editor's<br><span class="text-indigo-600 dark:text-indigo-400">Challenge</span></h1>
+                <p class="text-slate-500 font-serif italic mt-2 dark:text-slate-400">"Stet. Let it stand."</p>
             </div>
 
             <div class="w-full grid gap-4">
-                <button onclick="window.game.start('standard')" class="group w-full rounded-[28px] border border-slate-200 bg-white/90 p-6 text-left shadow-xl shadow-slate-200/50 transition hover:-translate-y-0.5 hover:shadow-2xl">
+                <button id="btn-start-standard" class="group w-full rounded-[28px] border border-slate-200 bg-slate-50 p-6 text-left shadow-xl shadow-slate-200/50 transition hover:-translate-y-0.5 hover:shadow-2xl dark:border-slate-700 dark:bg-slate-800 dark:shadow-slate-950/50">
                     <div class="flex items-center justify-between">
-                        <div>
-                            <p class="text-lg font-bold text-slate-900">Standard Mode</p>
-                            <p class="mt-2 text-sm text-slate-500">Relaxed pace. 3 lives. Build streaks in comfort.</p>
+                        <div class="text-left">
+                            <p class="text-lg font-bold text-slate-900 dark:text-slate-50">🎯 Standard Mode</p>
+                            <p class="mt-2 text-sm text-slate-500 dark:text-slate-300">Relaxed pace. 3 lives. Build streaks in comfort.</p>
                         </div>
-                        <span class="text-2xl text-slate-400 group-hover:text-indigo-600">→</span>
+                        <span class="text-2xl text-slate-400 group-hover:text-indigo-600 dark:text-slate-500 dark:group-hover:text-indigo-400">→</span>
                     </div>
                 </button>
-                <button onclick="window.game.start('deadline')" class="group w-full rounded-[28px] border border-indigo-200 bg-indigo-500/10 p-6 text-left shadow-xl shadow-indigo-200/30 transition hover:-translate-y-0.5 hover:shadow-2xl">
+                <button id="btn-start-deadline" class="group w-full rounded-[28px] border border-indigo-200 bg-indigo-500/10 p-6 text-left shadow-xl shadow-indigo-200/30 transition hover:-translate-y-0.5 hover:shadow-2xl dark:border-indigo-400/40 dark:bg-indigo-500/10 dark:shadow-indigo-950/40">
                     <div class="flex items-center justify-between">
-                        <div>
-                            <p class="text-lg font-bold text-slate-900">Deadline Mode ⚡</p>
-                            <p class="mt-2 text-sm text-slate-500">10s timer. High stakes. Fast editing flow.</p>
+                        <div class="text-left">
+                            <p class="text-lg font-bold text-slate-900 dark:text-slate-50">⏳ Deadline Mode</p>
+                            <p class="mt-2 text-sm text-slate-500 dark:text-slate-300">10s timer. High stakes. Fast editing flow.</p>
                         </div>
-                        <span class="text-2xl text-indigo-600 group-hover:text-indigo-800">→</span>
+                        <span class="text-2xl text-indigo-600 group-hover:text-indigo-800 dark:text-indigo-300 dark:group-hover:text-indigo-200">→</span>
                     </div>
                 </button>
-                <button onclick="window.game.start('blitz')" class="group w-full rounded-[28px] border border-orange-200 bg-orange-500/10 p-6 text-left shadow-xl shadow-orange-200/30 transition hover:-translate-y-0.5 hover:shadow-2xl">
+                <button id="btn-start-blitz" class="group w-full rounded-[28px] border border-orange-200 bg-orange-500/10 p-6 text-left shadow-xl shadow-orange-200/30 transition hover:-translate-y-0.5 hover:shadow-2xl dark:border-orange-400/40 dark:bg-orange-500/10 dark:shadow-orange-950/35">
                     <div class="flex items-center justify-between">
-                        <div>
-                            <p class="text-lg font-bold text-slate-900">Blitz Mode ⏱️</p>
-                            <p class="mt-2 text-sm text-slate-500">60 seconds. Infinite lives. Test your speed.</p>
+                        <div class="text-left">
+                            <p class="text-lg font-bold text-slate-900 dark:text-slate-50">⚡ Blitz Mode</p>
+                            <p class="mt-2 text-sm text-slate-500 dark:text-slate-300">60 seconds. Infinite lives. Test your speed.</p>
                         </div>
-                        <span class="text-2xl text-orange-600 group-hover:text-orange-800">→</span>
+                        <span class="text-2xl text-orange-600 group-hover:text-orange-800 dark:text-orange-300 dark:group-hover:text-orange-200">→</span>
                     </div>
                 </button>
             </div>
 
             <!-- Secondary Actions -->
              <div class="grid grid-cols-2 gap-3 w-full">
-                <button onclick="window.ui.toggleModal('modal-how-to', true)" class="w-full bg-slate-200 hover:bg-slate-300 text-slate-700 font-bold py-4 rounded-lg text-base transition-colors active:bg-slate-400 relative z-30">
+                <button onclick="window.ui.openHowToGeneral()" class="w-full bg-slate-200 hover:bg-slate-300 text-slate-700 font-bold py-4 rounded-lg text-base transition-colors active:bg-slate-400 relative z-30 dark:bg-slate-800 dark:text-slate-100 dark:hover:bg-slate-700">
                     How to Play
                 </button>
-                <button onclick="window.ui.toggleModal('modal-cheat', true)" class="w-full bg-amber-100 hover:bg-amber-200 text-amber-800 font-bold py-4 rounded-lg text-base transition-colors active:bg-amber-300 relative z-30">
+                <button onclick="window.ui.toggleModal('modal-cheat', true)" class="w-full bg-amber-100 hover:bg-amber-200 text-amber-800 font-bold py-4 rounded-lg text-base transition-colors active:bg-amber-300 relative z-30 dark:bg-amber-300 dark:text-amber-950 dark:hover:bg-amber-200">
                     Cheat Sheet
                 </button>
             </div>
@@ -164,10 +206,10 @@
         </div>
 
         <!-- ==================== GAME SCREEN ==================== -->
-        <div id="screen-game" class="hidden flex-col h-full w-full bg-slate-50">
+        <div id="screen-game" class="hidden flex-col h-full w-full bg-slate-50 dark:bg-slate-950">
             
             <!-- Header -->
-            <header class="h-16 bg-white border-b border-slate-200 flex items-center justify-between px-4 shrink-0 z-30 shadow-sm">
+            <header class="h-16 bg-white bg-opacity-95 backdrop-blur-xl border-b border-slate-200 flex items-center justify-between px-4 shrink-0 z-30 shadow-sm dark:border-slate-500/70 dark:text-slate-200">
                 <button onclick="window.game.togglePause()" class="p-2 text-slate-400 hover:text-slate-700 rounded-lg hover:bg-slate-100">
                     <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="4" width="4" height="16"></rect><rect x="14" y="4" width="4" height="16"></rect></svg>
                 </button>
@@ -187,7 +229,7 @@
 
                 <div class="flex items-center gap-2">
                     <button id="btn-audio-toggle-game" onclick="window.game.toggleSoundMute()" class="p-2 text-slate-400 hover:text-slate-700 rounded-lg hover:bg-slate-100">
-                        <span id="audio-toggle-icon-game">🔊</span>
+                        <span id="audio-toggle-icon-game" class="flex items-center justify-center w-6 h-6"><svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="w-6 h-6"><path stroke-linecap="round" stroke-linejoin="round" d="M19.114 5.636a9 9 0 010 12.728M16.463 8.288a5.25 5.25 0 010 7.424M6.75 8.25l4.72-4.72a.75.75 0 011.28.53v15.88a.75.75 0 01-1.28.53l-4.72-4.72H4.51c-.88 0-1.704-.507-1.938-1.354A9.01 9.01 0 012.25 12c0-.83.112-1.633.322-2.396C2.806 8.756 3.63 8.25 4.51 8.25H6.75z" /></svg></span>
                     </button>
                     <button onclick="window.ui.toggleModal('modal-cheat', true)" class="p-2 text-indigo-500 hover:text-indigo-700 font-bold text-sm bg-indigo-50 rounded-lg">
                         ?
@@ -206,8 +248,9 @@
             <!-- Main Content (Paper) -->
             <main class="flex-grow overflow-y-auto p-6 flex items-center justify-center relative">
                 <!-- Streak Indicator -->
-                <div id="streak-badge" class="absolute top-4 right-4 bg-amber-400 text-amber-900 px-3 py-1 rounded-full text-xs font-bold transform rotate-12 shadow-sm opacity-0 transition-opacity z-10">
-                    🔥 x<span id="streak-count">0</span>
+                <div id="streak-badge" class="absolute top-4 right-4 bg-amber-400 text-amber-900 px-3 py-1 rounded-full text-xs font-bold transform rotate-12 shadow-sm opacity-0 transition-opacity z-10 flex items-center gap-1">
+                    <svg class="w-4 h-4" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 18c-4.41 0-8-3.59-8-8s3.59-8 8-8 8 3.59 8 8-3.59 8-8 8zm3.5-9c.83 0 1.5-.67 1.5-1.5S16.33 8 15.5 8 14 8.67 14 9.5s.67 1.5 1.5 1.5zm-7 0c.83 0 1.5-.67 1.5-1.5S9.33 8 8.5 8 7 8.67 7 9.5 7.67 11 8.5 11zm3.5 6.5c2.33 0 4.31-1.46 5.11-3.5H6.89c.8 2.04 2.78 3.5 5.11 3.5z"/></svg>
+                    x<span id="streak-count">0</span>
                 </div>
 
                 <div id="question-card" class="paper-card w-full max-w-md p-8 min-h-[280px] flex flex-col justify-center relative rounded-sm transform rotate-1 transition-transform duration-300">
@@ -226,11 +269,11 @@
             <!-- Footer (Controls) -->
             <footer class="p-6 pb-8 shrink-0 z-30 w-full max-w-md mx-auto">
                 <div id="controls-binary" class="grid grid-cols-2 gap-4 hidden">
-                    <button onclick="window.game.handleAnswer(false)" class="bg-red-50 text-red-600 shadow-md hover:bg-red-100 border-2 border-red-100 font-bold py-6 rounded-2xl transition-all flex flex-col items-center active:scale-95">
+                    <button onclick="window.game.handleAnswer(false)" class="bg-red-50 text-red-600 shadow-md hover:bg-red-100 border-2 border-red-100 font-bold py-6 rounded-2xl transition-all flex flex-col items-center active:scale-95 dark:border-[rgba(71,85,105,0.75)] dark:shadow-[0_12px_24px_rgba(2,6,23,0.28)] dark:bg-[rgba(127,29,29,0.28)] dark:text-[#fca5a5]">
                         <span class="text-3xl mb-1">✕</span>
                         <span class="text-lg uppercase tracking-wide">Reject</span>
                     </button>
-                    <button onclick="window.game.handleAnswer(true)" class="bg-green-50 text-green-600 shadow-md hover:bg-green-100 border-2 border-green-100 font-bold py-6 rounded-2xl transition-all flex flex-col items-center active:scale-95">
+                    <button onclick="window.game.handleAnswer(true)" class="bg-green-50 text-green-600 shadow-md hover:bg-green-100 border-2 border-green-100 font-bold py-6 rounded-2xl transition-all flex flex-col items-center active:scale-95 dark:border-[rgba(71,85,105,0.75)] dark:shadow-[0_12px_24px_rgba(2,6,23,0.28)] dark:bg-[rgba(20,83,45,0.3)] dark:text-[#86efac]">
                         <span class="text-3xl mb-1">✓</span>
                         <span class="text-lg uppercase tracking-wide">Approve</span>
                     </button>
@@ -240,44 +283,87 @@
                     <!-- Options injected here -->
                 </div>
 
-                <button id="btn-next" onclick="window.game.nextQuestion()" class="hidden w-full bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-5 rounded-2xl shadow-xl transition-all text-xl pop-in active:scale-95">
+                <button id="btn-next" onclick="window.game.nextQuestion()" class="hidden w-full bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-5 rounded-2xl shadow-xl transition-all text-xl pop-in active:scale-95 dark:shadow-[0_18px_32px_rgba(79,70,229,0.32)]">
                     Next Manuscript →
                 </button>
             </footer>
         </div>
 
         <!-- ==================== GAME OVER SCREEN ==================== -->
-        <div id="screen-gameover" class="hidden absolute inset-0 z-40 bg-white flex flex-col items-center justify-center p-8 text-center space-y-6">
-            <div class="text-6xl mb-4" id="gameover-icon">📝</div>
-            <h2 class="text-3xl font-bold text-slate-900" id="gameover-title">Final Edit</h2>
+        <div id="screen-gameover" class="hidden absolute inset-0 z-40 bg-gradient-to-br from-slate-50 to-indigo-50 flex flex-col items-center justify-center p-8 text-center dark:bg-gradient-to-br dark:from-slate-950 dark:via-slate-900 dark:to-slate-800">
+            <div id="gameover-icon" class="flex items-center justify-center mb-4 relative z-10">
+                <span class="text-6xl mb-4 block text-center">📰</span>
+            </div>
             
-            <div class="w-full bg-slate-50 p-6 rounded-xl border border-slate-200 space-y-4">
-                <div class="flex justify-between items-center border-b border-slate-200 pb-2">
-                    <span class="text-slate-500">Total Score</span>
-                    <span class="text-2xl font-bold text-indigo-600" id="final-score">0</span>
-                </div>
-                <div class="flex justify-between items-center border-b border-slate-200 pb-2">
-                    <span class="text-slate-500">Highest Streak</span>
-                    <span class="text-xl font-bold text-amber-500" id="final-streak">0</span>
-                </div>
-                <div class="flex justify-between items-center">
-                    <span class="text-slate-500">Manuscripts Edited</span>
-                    <span class="text-xl font-bold text-slate-700" id="final-count">0</span>
+            <!-- Central Score Card -->
+            <div class="relative z-10 bg-white p-8 rounded-3xl shadow-2xl border-2 border-indigo-200 max-w-sm w-full dark:border-slate-500/70 dark:text-slate-200">
+                <div class="text-7xl font-black text-transparent bg-clip-text bg-gradient-to-r from-indigo-600 to-amber-500 mb-6 animate-count-up" id="final-score">0</div>
+                
+                <!-- Additional Stats -->
+                <div class="text-sm text-slate-500 space-y-1 dark:text-slate-300">
+                    <div>Highest Streak: <span id="final-streak" class="font-bold text-amber-500">0</span></div>
+                    <div>Manuscripts Edited: <span id="final-count" class="font-bold text-slate-700 dark:text-slate-100">0</span></div>
                 </div>
             </div>
 
-            <p id="gameover-msg" class="text-slate-600 font-serif italic">"Good effort, but the printing press waits for no one."</p>
+            <!-- New Endgame UI Element: Comparative Rank -->
+            <p id="endgame-comparative-rank" class="text-lg font-bold text-blue-600 min-h-[28px] mt-2 dark:text-blue-300"></p>
 
-            <button onclick="window.game.start(window.game.state.mode)" class="w-full bg-indigo-600 text-white font-bold py-4 rounded-lg shadow-md hover:bg-indigo-700 transition-all text-lg">Play Again</button>
-            <button onclick="window.ui.showHome()" class="text-slate-400 hover:text-slate-600 mt-4 block">Back to Menu</button>
-            <button onclick="window.ui.showLeaderboard()" class="w-full bg-amber-500 text-white font-bold py-4 rounded-lg shadow-md hover:bg-amber-600 transition-all text-lg mt-4">Global Leaderboard 🏆</button>
+            <!-- Presentation Flow: Fade in after score animation -->
+            <div class="opacity-0 animate-fade-in space-y-6" style="animation-delay: 3s; animation-fill-mode: forwards;">
+                <p id="gameover-msg" class="text-slate-600 font-serif italic text-lg dark:text-slate-300">"Good effort, but the printing press waits for no one."</p>
+
+                <div class="space-y-4 w-full max-w-sm">
+                    <button onclick="window.game.confirmMode(window.game.state.mode)" class="w-full bg-indigo-600 text-white font-bold py-4 rounded-xl shadow-lg hover:bg-indigo-700 transition-all text-lg flex items-center justify-start gap-2 px-4 dark:bg-indigo-500 dark:hover:bg-indigo-400 dark:shadow-[0_18px_32px_rgba(79,70,229,0.32)]">
+                        <svg class="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <polyline points="17 1 21 5 11 15"></polyline><path d="M21 5H11v10"></path>
+                        </svg>
+                        Play Again
+                    </button>
+                    
+                    <button onclick="window.ui.showHome()" class="w-full text-slate-400 hover:text-slate-600 py-3 rounded-xl border border-slate-200 bg-white hover:bg-slate-50 transition-all flex items-center justify-start gap-2 px-4 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200 dark:hover:bg-slate-700 dark:hover:text-slate-100">
+                        <svg class="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <path d="M3 9.5L12 3l9 6.5V20a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1V9.5z"></path>
+                        </svg>
+                        Main Menu
+                    </button>
+                    
+                    <button onclick="window.ui.showLeaderboard()" class="w-full bg-amber-500 text-white font-bold py-4 rounded-xl shadow-lg hover:bg-amber-600 transition-all text-lg flex items-center justify-start gap-2 px-4 dark:bg-amber-400 dark:text-amber-950 dark:hover:bg-amber-300">
+                        <svg class="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <path d="M4 19h16M4 15h10M4 11h16M4 7h6"></path>
+                        </svg>
+                        Global Leaderboard
+                    </button>
+                </div>
+            </div>
         </div>
 
         <!-- ==================== MODALS ==================== -->
 
+        <!-- Mode Confirm Modal -->
+        <div id="modal-mode-confirm" class="hidden absolute inset-0 z-[55] modal-backdrop flex items-center justify-center p-4">
+            <div class="bg-white p-8 rounded-2xl shadow-2xl w-full max-w-sm text-center dark:border dark:border-slate-500/70 dark:bg-slate-900 dark:text-slate-200">
+                <div class="w-16 h-16 mx-auto bg-indigo-100 text-indigo-600 rounded-full flex items-center justify-center text-3xl mb-4 dark:bg-slate-800 dark:border dark:border-indigo-500/30 dark:text-indigo-400" id="mode-confirm-icon">🎯</div>
+                <h3 class="text-2xl font-black text-slate-900 mb-2 dark:text-slate-50" id="mode-confirm-title">Standard Mode</h3>
+                <p class="text-slate-600 mb-6 dark:text-slate-300" id="mode-confirm-desc">Relaxed pace. 3 lives. Build streaks in comfort.</p>
+                
+                <div class="space-y-3">
+                    <button onclick="window.game.startPendingMode()" class="w-full bg-indigo-600 text-white font-bold py-4 rounded-xl shadow-lg hover:bg-indigo-700 transition-all text-lg dark:bg-indigo-500 dark:hover:bg-indigo-400">
+                        Start Editing
+                    </button>
+                    <button onclick="window.ui.openHowToFromConfirm()" class="w-full bg-slate-100 text-slate-700 font-bold py-3 rounded-xl hover:bg-slate-200 transition-all dark:bg-slate-800 dark:text-slate-200 dark:hover:bg-slate-700 border border-slate-200 dark:border-slate-700">
+                        How to Play
+                    </button>
+                    <button onclick="window.ui.toggleModal('modal-mode-confirm', false)" class="w-full text-slate-400 hover:text-slate-600 py-2 mt-2 font-semibold text-sm dark:hover:text-slate-300 transition-all">
+                        Cancel
+                    </button>
+                </div>
+            </div>
+        </div>
+
         <!-- Pause Modal -->
         <div id="modal-pause" class="hidden absolute inset-0 z-50 modal-backdrop flex items-center justify-center">
-            <div class="bg-white p-6 rounded-2xl shadow-2xl w-3/4 max-w-sm text-center">
+            <div class="bg-white p-6 rounded-2xl shadow-2xl w-3/4 max-w-sm text-center dark:border dark:border-slate-500/70 dark:text-slate-200">
                 <h3 class="text-xl font-bold mb-4">Paused</h3>
                 <div class="flex flex-col gap-3">
                     <button onclick="window.game.togglePause()" class="bg-indigo-600 text-white py-3 rounded-lg font-bold text-lg">Resume</button>
@@ -288,153 +374,113 @@
 
         <!-- How to Play Modal -->
         <div id="modal-how-to" class="hidden absolute inset-0 z-50 modal-backdrop flex items-center justify-center p-4">
-            <div class="bg-white p-6 rounded-2xl shadow-2xl w-full max-w-md max-h-[80vh] overflow-y-auto">
-                <div class="flex justify-between items-center mb-6 pb-2 border-b border-slate-100">
-                    <h3 class="text-xl font-bold text-slate-800">Editor's Guidelines</h3>
-                    <button onclick="window.ui.toggleModal('modal-how-to', false)" class="text-slate-400 hover:text-slate-600 text-2xl font-bold">&times;</button>
+            <div class="bg-white p-6 rounded-2xl shadow-2xl w-full max-w-md max-h-[80vh] overflow-y-auto dark:border dark:border-slate-500/70 dark:text-slate-200 dark:bg-slate-900">
+                <div class="flex justify-between items-center mb-6 pb-2 border-b border-slate-100 dark:border-slate-700">
+                    <h3 class="text-xl font-bold text-slate-800 dark:text-slate-100">Editor's Guidelines</h3>
+                    <button onclick="window.ui.closeHowTo()" class="text-slate-400 hover:text-slate-600 dark:hover:text-slate-300 text-2xl font-bold">&times;</button>
                 </div>
                 
-                <div class="space-y-4">
-                    <div class="flex items-start gap-3">
-                        <div class="flex-shrink-0 w-8 h-8 rounded-full bg-indigo-100 text-indigo-600 flex items-center justify-center font-bold text-sm">1</div>
-                        <div>
-                            <p class="font-bold text-slate-800">Review the Manuscript</p>
-                            <p class="text-sm text-slate-600 mt-1">Read the sentence on the yellow paper card.</p>
-                        </div>
-                    </div>
+                <div id="how-to-content" class="space-y-4"></div>
 
-                    <div class="flex items-start gap-3">
-                        <div class="flex-shrink-0 w-8 h-8 rounded-full bg-indigo-100 text-indigo-600 flex items-center justify-center font-bold text-sm">2</div>
-                        <div>
-                            <p class="font-bold text-slate-800">Make the Call</p>
-                            <p class="text-sm text-slate-600 mt-1">Select the option that fixes the error, or Approve/Reject if asked.</p>
-                        </div>
-                    </div>
-
-                    <div class="flex items-start gap-3">
-                        <div class="flex-shrink-0 w-8 h-8 rounded-full bg-amber-100 text-amber-600 flex items-center justify-center font-bold text-sm">3</div>
-                        <div>
-                            <p class="font-bold text-slate-800">Score & Streaks</p>
-                            <p class="text-sm text-slate-600 mt-1">
-                                Base: <span class="font-bold">1 pt</span>. 
-                                Streak 3+: <span class="font-bold">2x</span> multiplier. 
-                                Streak 10+: <span class="font-bold">5x</span> multiplier.
-                            </p>
-                        </div>
-                    </div>
-
-                    <div class="flex items-start gap-3">
-                        <div class="flex-shrink-0 w-8 h-8 rounded-full bg-red-100 text-red-600 flex items-center justify-center font-bold text-sm">4</div>
-                        <div>
-                            <p class="font-bold text-slate-800">Deadline Mode</p>
-                            <p class="text-sm text-slate-600 mt-1">You have exactly 10 seconds per edit. Don't freeze!</p>
-                        </div>
-                    </div>
-                </div>
-
-                <div class="mt-6 pt-4 border-t border-slate-100 text-center">
-                    <button onclick="window.ui.toggleModal('modal-how-to', false)" class="text-indigo-600 font-bold hover:underline">Got it, let's edit</button>
+                <div class="mt-6 pt-4 border-t border-slate-100 dark:border-slate-700 text-center">
+                    <button onclick="window.ui.closeHowTo()" class="text-indigo-600 dark:text-indigo-400 font-bold hover:underline">Got it, let's edit</button>
                 </div>
             </div>
         </div>
 
         <!-- Cheat Sheet Modal -->
         <div id="modal-cheat" class="hidden absolute inset-0 z-50 modal-backdrop flex items-center justify-center p-4">
-            <div class="bg-white p-6 rounded-2xl shadow-2xl w-full max-w-lg max-h-[90vh] overflow-y-auto">
-                <div class="flex justify-between items-center mb-4 sticky top-0 bg-white pb-2 border-b border-slate-100 z-10">
-                    <h3 class="text-xl font-bold text-indigo-900">Editor's Field Guide</h3>
-                    <button onclick="window.ui.toggleModal('modal-cheat', false)" class="text-slate-400 text-2xl hover:text-slate-700">&times;</button>
+            <div class="bg-white p-6 rounded-2xl shadow-2xl w-full max-w-lg max-h-[90vh] overflow-y-auto dark:border dark:border-slate-500/70 dark:text-slate-200 dark:bg-slate-900">
+                <div class="flex justify-between items-center mb-4 sticky top-0 bg-white dark:bg-slate-900 pb-2 border-b border-slate-100 dark:border-slate-700 z-10">
+                    <h3 class="text-xl font-bold text-indigo-900 dark:text-indigo-300">Editor's Field Guide</h3>
+                    <button onclick="window.ui.toggleModal('modal-cheat', false)" class="text-slate-400 text-2xl hover:text-slate-700 dark:hover:text-slate-300">&times;</button>
                 </div>
                 
-                <div class="space-y-6 text-sm text-slate-700">
+                <div id="cheat-sheet-accordion" class="space-y-2 text-sm text-slate-700 dark:text-slate-300">
                     
                     <!-- Section: Word Choice -->
-                    <div>
-                        <h4 class="font-bold text-indigo-600 uppercase tracking-wide text-xs mb-2">Word Choice & Confusing Pairs</h4>
-                        
-                        <div class="bg-indigo-50 p-3 rounded mb-2">
-                            <strong class="block text-indigo-900">Who vs. Whom (The "He/Him" Trick)</strong>
-                            <p class="mt-1">Replace the word with "He" or "Him".</p>
-                            <ul class="list-disc ml-4 mt-1 space-y-1">
-                                <li>If you can say <strong>He</strong>, use <strong>Who</strong>. (Both end in vowels).</li>
-                                <li>If you can say <strong>Him</strong>, use <strong>Whom</strong>. (Both end in M).</li>
-                            </ul>
-                            <p class="text-xs text-indigo-500 mt-1 italic">"To whom (him) did you give it?"</p>
-                        </div>
-
-                        <div class="bg-indigo-50 p-3 rounded mb-2">
-                            <strong class="block text-indigo-900">Affect vs. Effect (RAVEN)</strong>
-                            <p class="mt-1"><strong>R</strong>emember: <strong>A</strong>ffect is a <strong>V</strong>erb (Action). <strong>E</strong>ffect is a <strong>N</strong>oun (Result).</p>
-                            <p class="text-xs text-indigo-500 mt-1 italic">"The weather affected (changed) the crops." vs "The special effects were cool."</p>
-                        </div>
-
-                        <div class="bg-indigo-50 p-3 rounded mb-2">
-                            <strong class="block text-indigo-900">Fewer vs. Less (The "Count" Rule)</strong>
-                            <ul class="list-disc ml-4 mt-1 space-y-1">
-                                <li><strong>Fewer:</strong> Things you can count on fingers (Cookies, people, dollars).</li>
-                                <li><strong>Less:</strong> Things you can't count individually (Water, money, sand, time).</li>
-                            </ul>
-                        </div>
-
-                        <div class="bg-indigo-50 p-3 rounded">
-                            <strong class="block text-indigo-900">Lie vs. Lay</strong>
-                            <ul class="list-disc ml-4 mt-1 space-y-1">
-                                <li><strong>Lie:</strong> To recline yourself. (No object). "I need to lie down."</li>
-                                <li><strong>Lay:</strong> To place something else. (Needs object). "Lay the book down."</li>
-                            </ul>
+                    <div class="accordion-item">
+                        <button class="accordion-header">
+                            <span>Word Choice & Confusing Pairs</span>
+                            <svg class="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path></svg>
+                        </button>
+                        <div class="accordion-content">
+                            <div class="p-4 space-y-3">
+                                <div class="bg-indigo-50 border border-indigo-100 p-3 rounded dark:bg-slate-800/80 dark:border-indigo-500/40">
+                                    <strong class="block text-indigo-900 dark:text-indigo-300">Who vs. Whom (The "He/Him" Trick)</strong>
+                                    <p class="mt-1 dark:text-slate-200">Replace the word with "He" or "Him". If <strong>He</strong> fits, use <strong>Who</strong>. If <strong>Him</strong> fits, use <strong>Whom</strong>.</p>
+                                    <p class="text-xs text-indigo-500 mt-1 italic dark:text-indigo-400">"To whom (him) did you give it?"</p>
+                                </div>
+                                <div class="bg-indigo-50 border border-indigo-100 p-3 rounded dark:bg-slate-800/80 dark:border-indigo-500/40">
+                                    <strong class="block text-indigo-900 dark:text-indigo-300">Affect vs. Effect (RAVEN)</strong>
+                                    <p class="mt-1 dark:text-slate-200"><strong>R</strong>emember: <strong>A</strong>ffect is a <strong>V</strong>erb (Action). <strong>E</strong>ffect is a <strong>N</strong>oun (Result).</p>
+                                </div>
+                                <div class="bg-indigo-50 border border-indigo-100 p-3 rounded dark:bg-slate-800/80 dark:border-indigo-500/40">
+                                    <strong class="block text-indigo-900 dark:text-indigo-300">Fewer vs. Less</strong>
+                                    <p class="mt-1 dark:text-slate-200">Use <strong>Fewer</strong> for things you can count (cookies, people). Use <strong>Less</strong> for things you can't (water, time).</p>
+                                </div>
+                                <div class="bg-indigo-50 border border-indigo-100 p-3 rounded dark:bg-slate-800/80 dark:border-indigo-500/40">
+                                    <strong class="block text-indigo-900 dark:text-indigo-300">Lie vs. Lay</strong>
+                                    <p class="mt-1 dark:text-slate-200">You <strong>lie</strong> down yourself, but you <strong>lay</strong> an object down.</p>
+                                </div>
+                            </div>
                         </div>
                     </div>
 
                     <!-- Section: Punctuation -->
-                    <div>
-                        <h4 class="font-bold text-amber-600 uppercase tracking-wide text-xs mb-2">Punctuation Rules</h4>
-                        
-                        <div class="bg-amber-50 p-3 rounded mb-2">
-                            <strong class="block text-amber-900">It's vs. Its (The "Is" Test)</strong>
-                            <p class="mt-1">Read the sentence as "It Is". If it makes sense, use the apostrophe.</p>
-                            <ul class="list-disc ml-4 mt-1 space-y-1">
-                                <li><strong>It's:</strong> "It's (It is) raining."</li>
-                                <li><strong>Its:</strong> "The dog chased its tail." (Ownership, like 'His').</li>
-                            </ul>
-                        </div>
-
-                        <div class="bg-amber-50 p-3 rounded mb-2">
-                            <strong class="block text-amber-900">Semicolons (;) The "Super Comma"</strong>
-                            <p class="mt-1">Use a semicolon to connect two <strong>complete</strong> sentences that are related.</p>
-                            <p class="text-xs text-amber-700 mt-1 italic">"It was raining; we stayed inside." (Both sides could stand alone).</p>
-                        </div>
-
-                         <div class="bg-amber-50 p-3 rounded">
-                            <strong class="block text-amber-900">Comma Splice (The "Weak Link")</strong>
-                            <p class="mt-1">You cannot join two sentences with just a comma. It's too weak.</p>
-                            <p class="text-xs text-red-500 mt-1 line-through">"He is fast, he is strong."</p>
-                            <p class="text-xs text-green-600 italic">"He is fast, <strong>and</strong> he is strong." or "He is fast; he is strong."</p>
+                    <div class="accordion-item">
+                        <button class="accordion-header">
+                            <span>Punctuation Rules</span>
+                            <svg class="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path></svg>
+                        </button>
+                        <div class="accordion-content">
+                            <div class="p-4 space-y-3">
+                                <div class="bg-amber-50 border border-amber-100 p-3 rounded dark:bg-slate-800/80 dark:border-amber-500/40">
+                                    <strong class="block text-amber-900 dark:text-amber-300">It's vs. Its (The "Is" Test)</strong>
+                                    <p class="mt-1 dark:text-slate-200">Read the sentence as "It Is". If it makes sense, use <strong>It's</strong>. Otherwise, use <strong>Its</strong> for ownership.</p>
+                                </div>
+                                <div class="bg-amber-50 border border-amber-100 p-3 rounded dark:bg-slate-800/80 dark:border-amber-500/40">
+                                    <strong class="block text-amber-900 dark:text-amber-300">Semicolons (;)</strong>
+                                    <p class="mt-1 dark:text-slate-200">Use a semicolon to connect two complete, related sentences. It's like a "super comma".</p>
+                                    <p class="text-xs text-amber-700 mt-1 italic dark:text-amber-400">"It was raining; we stayed inside."</p>
+                                </div>
+                                 <div class="bg-amber-50 border border-amber-100 p-3 rounded dark:bg-slate-800/80 dark:border-amber-500/40">
+                                    <strong class="block text-amber-900 dark:text-amber-300">Comma Splice</strong>
+                                    <p class="mt-1 dark:text-slate-200">You cannot join two complete sentences with only a comma. This is a <span class="jargon" data-tooltip="A common error where two full sentences are joined by only a comma.">comma splice</span>.</p>
+                                    <p class="text-xs text-red-500 mt-1 line-through dark:text-red-400">"He is fast, he is strong."</p>
+                                    <p class="text-xs text-green-600 italic dark:text-emerald-400">Fix: "He is fast, <strong>and</strong> he is strong." or "He is fast; he is strong."</p>
+                                </div>
+                            </div>
                         </div>
                     </div>
 
                     <!-- Section: Structure -->
-                    <div>
-                        <h4 class="font-bold text-emerald-600 uppercase tracking-wide text-xs mb-2">Sentence Structure</h4>
-
-                        <div class="bg-emerald-50 p-3 rounded mb-2">
-                            <strong class="block text-emerald-900">Dangling Modifiers (The "Who" Rule)</strong>
-                            <p class="mt-1">The descriptive phrase at the start must be immediately followed by the person/thing doing the action.</p>
-                            <p class="text-xs text-red-500 mt-1 line-through">"Running to the store, the rain fell." (The rain can't run).</p>
-                            <p class="text-xs text-green-600 italic">"Running to the store, <strong>I</strong> got wet."</p>
-                        </div>
-
-                         <div class="bg-emerald-50 p-3 rounded mb-2">
-                            <strong class="block text-emerald-900">Passive Voice (The "Zombie" Test)</strong>
-                            <p class="mt-1">If you can add "by zombies" after the verb, it's passive. Active voice is usually stronger.</p>
-                            <p class="text-xs text-slate-500 mt-1">"The ball was thrown (by zombies)." -> Passive.</p>
-                            <p class="text-xs text-green-600 italic">"The boy threw the ball." -> Active.</p>
-                        </div>
-                        
-                         <div class="bg-emerald-50 p-3 rounded">
-                            <strong class="block text-emerald-900">Parallelism (The "Matching Game")</strong>
-                            <p class="mt-1">Items in a list must follow the same pattern (all -ing, all nouns, etc).</p>
-                             <p class="text-xs text-red-500 mt-1 line-through">"I like hiking, swimming, and to run."</p>
-                            <p class="text-xs text-green-600 italic">"I like hiking, swimming, and running."</p>
+                    <div class="accordion-item">
+                        <button class="accordion-header">
+                            <span>Sentence Structure</span>
+                            <svg class="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path></svg>
+                        </button>
+                        <div class="accordion-content">
+                            <div class="p-4 space-y-3">
+                                <div class="bg-emerald-50 border border-emerald-100 p-3 rounded dark:bg-slate-800/80 dark:border-emerald-500/40">
+                                    <strong class="block text-emerald-900 dark:text-emerald-300">Dangling Modifiers</strong>
+                                    <p class="mt-1 dark:text-slate-200">A descriptive phrase must be immediately followed by the thing it's describing.</p>
+                                    <p class="text-xs text-red-500 mt-1 line-through dark:text-red-400">"Running to the store, the rain fell." (The rain can't run).</p>
+                                    <p class="text-xs text-green-600 italic dark:text-emerald-400">Fix: "Running to the store, <strong>I</strong> got wet."</p>
+                                </div>
+                                 <div class="bg-emerald-50 border border-emerald-100 p-3 rounded dark:bg-slate-800/80 dark:border-emerald-500/40">
+                                    <strong class="block text-emerald-900 dark:text-emerald-300">Passive Voice (The "Zombie" Test)</strong>
+                                    <p class="mt-1 dark:text-slate-200">If you can add "by zombies" after the verb, it's <span class="jargon" data-tooltip="The subject of the sentence receives the action, instead of doing it. Often weaker.">passive voice</span>. Active is stronger.</p>
+                                    <p class="text-xs text-slate-500 mt-1 dark:text-slate-400">"The ball was thrown (by zombies)." → Passive.</p>
+                                    <p class="text-xs text-green-600 italic dark:text-emerald-400">"The boy threw the ball." → Active.</p>
+                                </div>
+                                 <div class="bg-emerald-50 border border-emerald-100 p-3 rounded dark:bg-slate-800/80 dark:border-emerald-500/40">
+                                    <strong class="block text-emerald-900 dark:text-emerald-300">Parallelism</strong>
+                                    <p class="mt-1 dark:text-slate-200">Items in a list must have the same grammatical form.</p>
+                                     <p class="text-xs text-red-500 mt-1 line-through dark:text-red-400">"I like hiking, swimming, and to run."</p>
+                                    <p class="text-xs text-green-600 italic dark:text-emerald-400">Fix: "I like hiking, swimming, and running."</p>
+                                </div>
+                            </div>
                         </div>
                     </div>
 
@@ -442,33 +488,93 @@
             </div>
         </div>
 
+        <!-- Profile Setup Modal -->
+        <div id="modal-profile" class="hidden absolute inset-0 z-50 modal-backdrop flex items-center justify-center p-4">
+            <div class="bg-white p-8 rounded-2xl shadow-2xl w-full max-w-md dark:border dark:border-slate-500/70 dark:text-slate-200">
+                <div class="flex justify-between items-center mb-6 pb-4 border-b border-slate-100">
+                    <h3 class="text-2xl font-bold text-slate-800">✨ Edit Profile</h3>
+                    <button onclick="window.ui.toggleModal('modal-profile', false)" class="text-slate-400 hover:text-slate-600 text-2xl font-bold">&times;</button>
+                </div>
+
+                <div class="flex justify-center mb-4"><div id="modal-live-preview" class="w-24 h-24 rounded-full flex items-center justify-center text-5xl shadow-lg transition-colors duration-200"></div></div>
+
+                <!-- Username Input -->
+                <div class="mb-6">
+                    <label class="text-sm font-semibold text-slate-700 mb-2 block dark:text-slate-200">Username</label>
+                    <input id="profile-username-input" type="text" maxlength="15" placeholder="Enter your username" class="w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-900 shadow-sm placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-indigo-500 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100 dark:placeholder:text-slate-500" />
+                    <p class="text-xs text-slate-500 mt-1 dark:text-slate-400">Max 15 characters</p>
+                </div>
+
+                <!-- Emoji Avatar Grid -->
+                <div class="mb-6">
+                    <label class="text-sm font-semibold text-slate-700 mb-3 block dark:text-slate-200">Choose Avatar</label>
+                    <div class="grid grid-cols-6 gap-2" id="profile-emoji-grid">
+                        <button onclick="window.ui.selectProfileEmoji(this, '🦊')" class="w-full aspect-square rounded-lg bg-slate-100 hover:bg-slate-200 flex items-center justify-center text-2xl transition border-2 border-transparent" aria-label="Fox">🦊</button>
+                        <button onclick="window.ui.selectProfileEmoji(this, '🐙')" class="w-full aspect-square rounded-lg bg-slate-100 hover:bg-slate-200 flex items-center justify-center text-2xl transition border-2 border-transparent" aria-label="Octopus">🐙</button>
+                        <button onclick="window.ui.selectProfileEmoji(this, '🦉')" class="w-full aspect-square rounded-lg bg-slate-100 hover:bg-slate-200 flex items-center justify-center text-2xl transition border-2 border-transparent" aria-label="Owl">🦉</button>
+                        <button onclick="window.ui.selectProfileEmoji(this, '🕵️‍♂️')" class="w-full aspect-square rounded-lg bg-slate-100 hover:bg-slate-200 flex items-center justify-center text-2xl transition border-2 border-transparent" aria-label="Detective">🕵️‍♂️</button>
+                        <button onclick="window.ui.selectProfileEmoji(this, '👩‍💻')" class="w-full aspect-square rounded-lg bg-slate-100 hover:bg-slate-200 flex items-center justify-center text-2xl transition border-2 border-transparent" aria-label="Developer">👩‍💻</button>
+                        <button onclick="window.ui.selectProfileEmoji(this, '📝')" class="w-full aspect-square rounded-lg bg-slate-100 hover:bg-slate-200 flex items-center justify-center text-2xl transition border-2 border-transparent" aria-label="Notepad">📝</button>
+                        <button onclick="window.ui.selectProfileEmoji(this, '🧠')" class="w-full aspect-square rounded-lg bg-slate-100 hover:bg-slate-200 flex items-center justify-center text-2xl transition border-2 border-transparent" aria-label="Brain">🧠</button>
+                        <button onclick="window.ui.selectProfileEmoji(this, '🚀')" class="w-full aspect-square rounded-lg bg-slate-100 hover:bg-slate-200 flex items-center justify-center text-2xl transition border-2 border-transparent" aria-label="Rocket">🚀</button>
+                        <button onclick="window.ui.selectProfileEmoji(this, '💎')" class="w-full aspect-square rounded-lg bg-slate-100 hover:bg-slate-200 flex items-center justify-center text-2xl transition border-2 border-transparent" aria-label="Gem">💎</button>
+                        <button onclick="window.ui.selectProfileEmoji(this, '⚡')" class="w-full aspect-square rounded-lg bg-slate-100 hover:bg-slate-200 flex items-center justify-center text-2xl transition border-2 border-transparent" aria-label="Lightning">⚡</button>
+                        <button onclick="window.ui.selectProfileEmoji(this, '🎯')" class="w-full aspect-square rounded-lg bg-slate-100 hover:bg-slate-200 flex items-center justify-center text-2xl transition border-2 border-transparent" aria-label="Target">🎯</button>
+                        <button onclick="window.ui.selectProfileEmoji(this, '🔥')" class="w-full aspect-square rounded-lg bg-slate-100 hover:bg-slate-200 flex items-center justify-center text-2xl transition border-2 border-transparent" aria-label="Fire">🔥</button>
+                    </div>
+                </div>
+
+                <!-- Color Swatches -->
+                <div class="mb-6">
+                    <label class="text-sm font-semibold text-slate-700 mb-3 block dark:text-slate-200">Background Color</label>
+                    <div class="flex gap-3 justify-center" id="profile-color-swatches">
+                        <button onclick="window.ui.selectProfileColor(this, 'bg-red-500')" class="w-10 h-10 rounded-full bg-red-500 border-3 border-slate-200 hover:border-slate-400 transition" title="Red"></button>
+                        <button onclick="window.ui.selectProfileColor(this, 'bg-blue-500')" class="w-10 h-10 rounded-full bg-blue-500 border-3 border-slate-200 hover:border-slate-400 transition" title="Blue"></button>
+                        <button onclick="window.ui.selectProfileColor(this, 'bg-green-500')" class="w-10 h-10 rounded-full bg-green-500 border-3 border-slate-200 hover:border-slate-400 transition" title="Green"></button>
+                        <button onclick="window.ui.selectProfileColor(this, 'bg-yellow-400')" class="w-10 h-10 rounded-full bg-yellow-400 border-3 border-slate-200 hover:border-slate-400 transition" title="Yellow"></button>
+                        <button onclick="window.ui.selectProfileColor(this, 'bg-purple-500')" class="w-10 h-10 rounded-full bg-purple-500 border-3 border-slate-200 hover:border-slate-400 transition" title="Purple"></button>
+                        <button onclick="window.ui.selectProfileColor(this, 'bg-pink-500')" class="w-10 h-10 rounded-full bg-pink-500 border-3 border-slate-200 hover:border-slate-400 transition" title="Pink"></button>
+                    </div>
+                </div>
+
+                <!-- Save Button -->
+                <button onclick="window.ui.saveProfile()" class="w-full rounded-full bg-indigo-600 px-6 py-3 text-base font-bold text-white shadow-lg shadow-indigo-200/40 transition hover:bg-indigo-700">
+                    Save Profile
+                </button>
+            </div>
+        </div>
+
         <!-- Leaderboard Modal -->
-        <div id="modal-leaderboard" class="hidden absolute inset-0 z-50 modal-backdrop flex items-center justify-center p-4">
-            <div class="bg-white p-6 rounded-2xl shadow-2xl w-full max-w-md max-h-[80vh] overflow-hidden flex flex-col">
-                <div class="flex justify-between items-center mb-6 pb-2 border-b border-slate-100">
-                    <h3 class="text-xl font-bold text-slate-800">Global Leaderboard 🏆</h3>
-                    <button onclick="window.ui.toggleModal('modal-leaderboard', false)" class="text-slate-400 hover:text-slate-600 text-2xl font-bold">&times;</button>
+        <div id="leaderboard-modal" class="fixed inset-0 z-[100] hidden bg-slate-900/50 backdrop-blur-sm flex items-center justify-center p-4">
+            <div class="bg-white w-full max-w-md rounded-2xl shadow-2xl flex flex-col h-[560px] max-h-[80vh] min-h-[560px] overflow-hidden p-6 dark:border dark:border-slate-500/70 dark:text-slate-200">
+                <div class="flex justify-between items-center mb-10 pb-2 border-b border-slate-100">
+                    <div class="flex items-center gap-2">
+                        <h3 class="text-2xl font-bold tracking-wide text-slate-800">🏆 Global Leaderboard</h3>
+                    </div>
+                    <button onclick="window.ui.toggleModal('leaderboard-modal', false)" class="text-slate-400 hover:text-slate-600 text-2xl font-bold">&times;</button>
                 </div>
-                
-                <!-- Tab Navigation -->
-                <div class="flex flex-wrap gap-2 mb-4 pb-3 border-b border-slate-100">
-                    <button onclick="window.ui.showLeaderboard('standard')" id="lb-tab-standard" class="px-3 py-1 rounded-full text-xs font-bold transition-all bg-slate-200 text-slate-700 hover:bg-slate-300">Standard</button>
-                    <button onclick="window.ui.showLeaderboard('deadline')" id="lb-tab-deadline" class="px-3 py-1 rounded-full text-xs font-bold transition-all bg-slate-200 text-slate-700 hover:bg-slate-300">Deadline</button>
-                    <button onclick="window.ui.showLeaderboard('blitz')" id="lb-tab-blitz" class="px-3 py-1 rounded-full text-xs font-bold transition-all bg-slate-200 text-slate-700 hover:bg-slate-300">Blitz</button>
-                </div>
-                
-                <!-- Deadline Sub-Navigation (Hidden by default) -->
-                <div id="deadline-sub-nav" class="hidden flex gap-2 mb-4 pb-3 border-b border-slate-100 justify-center">
-                    <button onclick="window.ui.showLeaderboard('deadline', 'score')" id="lb-sub-score" class="px-4 py-2 rounded-full text-sm font-bold transition-all bg-indigo-600 text-white">Highest Score</button>
-                    <button onclick="window.ui.showLeaderboard('deadline', 'streak')" id="lb-sub-streak" class="px-4 py-2 rounded-full text-sm font-bold transition-all bg-slate-200 text-slate-700 hover:bg-slate-300">Longest Streak</button>
-                </div>
-                
-                <div id="leaderboard-list" class="flex-1 overflow-y-auto space-y-3">
-                    <!-- Leaderboard items will be injected here -->
+
+                <div class="flex flex-1 flex-col min-h-0">
+                    <!-- Tab Navigation -->
+                    <div class="flex flex-wrap gap-2 mb-4 pb-3 border-b border-slate-100">
+                        <button onclick="window.ui.showLeaderboard('standard')" id="lb-tab-standard" class="px-3 py-1 rounded-full text-xs font-bold transition-all bg-slate-200 text-slate-700 hover:bg-slate-300">Standard</button>
+                        <button onclick="window.ui.showLeaderboard('deadline')" id="lb-tab-deadline" class="px-3 py-1 rounded-full text-xs font-bold transition-all bg-slate-200 text-slate-700 hover:bg-slate-300">Deadline</button>
+                        <button onclick="window.ui.showLeaderboard('blitz')" id="lb-tab-blitz" class="px-3 py-1 rounded-full text-xs font-bold transition-all bg-slate-200 text-slate-700 hover:bg-slate-300">Blitz</button>
+                    </div>
+                    
+                    <!-- Deadline Sub-Navigation (Space reserved across modes) -->
+                    <div id="deadline-sub-nav" class="invisible flex gap-2 mb-4 min-h-[60px] pb-3 border-b border-slate-100 justify-center pointer-events-none">
+                        <button onclick="window.ui.showLeaderboard('deadline', 'score')" id="lb-sub-score" class="px-4 py-2 rounded-full text-sm font-bold transition-all bg-indigo-600 text-white">Highest Score</button>
+                        <button onclick="window.ui.showLeaderboard('deadline', 'streak')" id="lb-sub-streak" class="px-4 py-2 rounded-full text-sm font-bold transition-all bg-slate-200 text-slate-700 hover:bg-slate-300">Longest Streak</button>
+                    </div>
+                    
+                    <div id="leaderboard-list" class="flex flex-col flex-1 min-h-0 overflow-y-auto space-y-3">
+                        <!-- Leaderboard items will be injected here -->
+                    </div>
                 </div>
 
                 <div id="leaderboard-login-prompt" class="mt-4 p-3 bg-slate-50 rounded-lg text-center text-sm text-slate-600">
-                    Want your name on the board? <button onclick="window.authEngine.login()" class="text-indigo-600 font-semibold hover:underline">Sign in</button> to save scores.
+                    Want your name on the board? <button onclick="window.authEngine.login()" class="text-indigo-600 font-semibold hover:underline">Sign in</button> to save your scores.
                 </div>
             </div>
         </div>
@@ -480,6 +586,19 @@
 <script>
   if ('serviceWorker' in navigator) {
     window.addEventListener('load', () => {
+      const isLocalhost = ['localhost', '127.0.0.1'].includes(window.location.hostname);
+
+      if (isLocalhost) {
+        navigator.serviceWorker.getRegistrations().then((registrations) => {
+          registrations.forEach((registration) => registration.unregister());
+        });
+        if ('caches' in window) {
+          caches.keys().then((keys) => keys.forEach((key) => caches.delete(key)));
+        }
+        console.log('Service workers disabled on localhost for development.');
+        return;
+      }
+
       navigator.serviceWorker.register('./sw.js').then(reg => {
         console.log('Service Worker registered!', reg);
       }).catch(err => {
@@ -490,9 +609,12 @@
 </script>
 
 <!-- Install Prompt Toast -->
-<div id="install-toast" class="hidden fixed bottom-4 left-1/2 transform -translate-x-1/2 bg-gray-900 text-white rounded-lg shadow-lg z-50 w-11/12 max-w-sm p-4">
+<div id="install-toast" class="hidden fixed bottom-4 left-1/2 transform -translate-x-1/2 bg-gray-900 text-white rounded-lg shadow-lg z-50 w-11/12 max-w-sm p-4 dark:bg-slate-800">
   <div class="flex justify-between items-start mb-2">
-    <h3 class="font-bold text-lg">📱 Install the App</h3>
+    <div class="flex items-center gap-2">
+      <svg class="w-5 h-5 flex-shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>
+      <h3 class="font-bold text-lg">Install the App</h3>
+    </div>
     <button id="close-install-toast" class="text-gray-400 hover:text-white text-xl">&times;</button>
   </div>
   <p id="install-instructions" class="text-sm mb-3"></p>

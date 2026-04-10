@@ -1,6 +1,7 @@
 import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
 import { getAuth, signInWithPopup, GoogleAuthProvider, onAuthStateChanged, signOut, updateProfile } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
-import { getFirestore, collection, addDoc, query, orderBy, limit, getDocs, where } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+import { getFirestore, collection, addDoc, query, orderBy, limit, getDocs, where, getCountFromServer, setDoc, doc, getDoc, writeBatch } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+import { getAnalytics, logEvent } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-analytics.js";
 
 const firebaseConfig = {
   apiKey: "AIzaSyD_Krda4l_oZPKH3TiZuIagvIVfhbYjJIE",
@@ -13,9 +14,57 @@ const firebaseConfig = {
 };
 
 const firebaseApp = initializeApp(firebaseConfig);
+const analytics = getAnalytics(firebaseApp);
+window.analytics = analytics;
 const auth = getAuth(firebaseApp);
 const db = getFirestore(firebaseApp);
 const provider = new GoogleAuthProvider();
+const PROFILE_CHANGE_COOLDOWN_MS = 7 * 24 * 60 * 60 * 1000;
+const PUBLIC_TAG_ALPHABET = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
+const ADMIN_EMAILS = ['bentzion.boyer@gmail.com'];
+
+// Global PWA install event
+window.deferredPrompt = null;
+
+/**
+ * MOBILE DETECTION
+ */
+const isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
+
+const cloneUserProfile = (profile = {}) => ({
+    username: profile.username || 'Guest Player',
+    avatar: profile.avatar || '👤',
+    avatarColor: profile.avatarColor || 'bg-slate-200',
+    publicTag: profile.publicTag || '',
+    lastProfileChangeAt: profile.lastProfileChangeAt || null
+});
+
+const toDateOrNull = (value) => {
+    if (!value) return null;
+    if (value instanceof Date) return value;
+    if (typeof value?.toDate === 'function') return value.toDate();
+    const parsed = new Date(value);
+    return Number.isNaN(parsed.getTime()) ? null : parsed;
+};
+
+const createPublicTagCandidate = () => {
+    let tag = '#';
+    for (let i = 0; i < 4; i++) {
+        tag += PUBLIC_TAG_ALPHABET[Math.floor(Math.random() * PUBLIC_TAG_ALPHABET.length)];
+    }
+    return tag;
+};
+
+const generateUniquePublicTag = async () => {
+    for (let attempt = 0; attempt < 20; attempt++) {
+        const candidate = createPublicTagCandidate();
+        const existing = await getDocs(query(collection(db, 'users'), where('publicTag', '==', candidate), limit(1)));
+        if (existing.empty) return candidate;
+    }
+    throw new Error('Unable to generate a unique public tag.');
+};
+
+const isAdminUser = (user) => !!user?.email && ADMIN_EMAILS.includes(user.email.toLowerCase());
 
 const authEngine = {
     login: async function() {
@@ -54,6 +103,89 @@ const authEngine = {
             console.error('Name update failed', error);
             alert('Unable to update your name. Try again.');
         }
+    },
+    
+    saveProfile: async function() {
+        const user = auth.currentUser;
+        if (!user) {
+            console.error('User not authenticated');
+            return;
+        }
+
+        const existingProfile = cloneUserProfile(window.game.state.savedUserProfile || window.game.state.userProfile);
+        const inputUsername = document.getElementById('profile-username-input')?.value?.trim() || '';
+        const username = inputUsername || existingProfile.username || 'Guest Player';
+
+        // Get selected emoji and color from state (these should be set by UI functions)
+        const selectedEmoji = window.game.state.userProfile.avatar;
+        const selectedColor = window.game.state.userProfile.avatarColor;
+        const publicTag = existingProfile.publicTag || await generateUniquePublicTag();
+        const hasChanges =
+            username !== existingProfile.username ||
+            selectedEmoji !== existingProfile.avatar ||
+            selectedColor !== existingProfile.avatarColor;
+
+        if (!hasChanges) {
+            window.ui.toggleModal('modal-profile', false);
+            return;
+        }
+
+        const lastChangeAt = toDateOrNull(existingProfile.lastProfileChangeAt);
+        if (!window.game.state.isAdmin && lastChangeAt && (Date.now() - lastChangeAt.getTime()) < PROFILE_CHANGE_COOLDOWN_MS) {
+            const nextChangeDate = new Date(lastChangeAt.getTime() + PROFILE_CHANGE_COOLDOWN_MS);
+            alert(`Profiles can only be updated once every 7 days. You can change yours again after ${nextChangeDate.toLocaleDateString()}.`);
+            return;
+        }
+
+        try {
+            const changedAt = new Date();
+            // Save profile to users collection with merge: true
+            const userDocRef = doc(db, 'users', user.uid);
+            await setDoc(userDocRef, {
+                username,
+                avatar: selectedEmoji,
+                avatarColor: selectedColor,
+                publicTag,
+                lastProfileChangeAt: changedAt,
+                updatedAt: changedAt
+            }, { merge: true });
+
+            try {
+                const batch = writeBatch(db);
+                const gamesQuery = query(collection(db, 'games'), where('uid', '==', user.uid));
+                const querySnapshot = await getDocs(gamesQuery);
+
+                querySnapshot.forEach((gameDoc) => {
+                    batch.update(gameDoc.ref, {
+                        username,
+                        avatar: selectedEmoji,
+                        avatarColor: selectedColor,
+                        publicTag
+                    });
+                });
+
+                await batch.commit();
+            } catch (error) {
+                console.warn("Could not backfill past scores:", error);
+            }
+
+            // Update global state
+            window.game.state.userProfile = {
+                username,
+                avatar: selectedEmoji,
+                avatarColor: selectedColor,
+                publicTag,
+                lastProfileChangeAt: changedAt
+            };
+            window.game.state.savedUserProfile = cloneUserProfile(window.game.state.userProfile);
+
+            // Update header and close modal
+            window.ui.updateHeaderProfile();
+            window.ui.toggleModal('modal-profile', false);
+        } catch (error) {
+            console.error('Error saving profile:', error);
+            alert('Unable to save profile. Try again.');
+        }
     }
 };
 window.authEngine = authEngine;
@@ -62,42 +194,128 @@ const updateAuthUI = (user) => {
     const profileButton = document.getElementById('btn-user-profile');
     const headerAvatar = document.getElementById('header-avatar');
     const sidebarAvatar = document.getElementById('sidebar-avatar');
-    const sidebarName = document.getElementById('sidebar-user-name');
+    const sidebarUsername = document.getElementById('sidebar-username');
     const leaderboardButton = document.getElementById('btn-leaderboard-home');
     const guestUI = document.getElementById('guest-ui');
     const loggedInUI = document.getElementById('logged-in-ui');
     const loggedInUIBottom = document.getElementById('logged-in-ui-bottom');
     const leaderboardLoginPrompt = document.getElementById('leaderboard-login-prompt');
+    const adminPanel = document.getElementById('admin-panel');
+    const adminBadge = document.getElementById('sidebar-admin-badge');
 
-    if (!profileButton || !headerAvatar || !sidebarAvatar || !sidebarName || !leaderboardButton || !guestUI || !loggedInUI || !loggedInUIBottom || !leaderboardLoginPrompt) return;
+    if (!profileButton || !headerAvatar || !sidebarAvatar || !sidebarUsername || !leaderboardButton || !guestUI || !loggedInUI || !loggedInUIBottom || !leaderboardLoginPrompt) return;
 
     if (user) {
         profileButton.classList.remove('hidden');
         headerAvatar.src = user.photoURL || 'https://www.gravatar.com/avatar/?d=mp';
-        sidebarAvatar.src = user.photoURL || 'https://www.gravatar.com/avatar/?d=mp';
-        sidebarName.innerText = user.displayName || 'Player';
+        sidebarUsername.innerText = user.displayName || 'Player';
         leaderboardButton.disabled = false;
         leaderboardButton.classList.remove('opacity-40', 'cursor-not-allowed');
         guestUI.classList.add('hidden');
         loggedInUI.classList.remove('hidden');
         loggedInUIBottom.classList.remove('hidden');
         leaderboardLoginPrompt.classList.add('hidden');
+        if (window.game.state.isAdmin) {
+            adminPanel?.classList.remove('hidden');
+            adminBadge?.classList.remove('hidden');
+        } else {
+            adminPanel?.classList.add('hidden');
+            adminBadge?.classList.add('hidden');
+        }
     } else {
         profileButton.classList.remove('hidden');
-        headerAvatar.src = 'data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMjQiIGhlaWdodD0iMjQiIHZpZXdCb3g9IjAgMCAyNCAyNCIgZmlsbD0ibm9uZSIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj4KPHBhdGggZD0iTTEyIDEyYzIuMjEgMCA0LTEuNzkgNC00cy0xLjc5LTQtNC00LTQgMS43OS00IDQgMS43OSA0IDQgNHptMCAyYy0yLjY3IDAtOCAxLjM0LTggNFYyMWgxNnYtMmMwLTIuNjYtNS4zMy00LTgtNHoiIGZpbGw9IiM5Y2E0YWYiLz4KPC9zdmc+';
-        sidebarAvatar.src = '';
-        sidebarName.innerText = 'Player';
+        headerAvatar.src = 'data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCIgZmlsbD0iY3VycmVudENvbG9yIj48cGF0aCBkPSJNMTIgMTJjMi43NiAwIDUtMi4yNCA1LTVzLTIuMjQtNS01LTUtNSAyLjI0LTUgNSAyLjI0IDUgNSA1eiIvPjxwYXRoIGQ9Ik00IDIyYzAtNCA0LTcgOC03czggMyA4IDd2MUg0di0xeiIvPjwvc3ZnPg==';
+        sidebarAvatar.innerText = '👤';
+        sidebarAvatar.className = 'w-20 h-20 rounded-full flex items-center justify-center text-4xl shadow-md mx-auto mb-2 bg-slate-200';
+        sidebarUsername.innerText = 'Player';
         leaderboardButton.disabled = false;
         leaderboardButton.classList.remove('opacity-40', 'cursor-not-allowed');
         guestUI.classList.remove('hidden');
         loggedInUI.classList.add('hidden');
         loggedInUIBottom.classList.add('hidden');
         leaderboardLoginPrompt.classList.remove('hidden');
+        adminPanel?.classList.add('hidden');
+        adminBadge?.classList.add('hidden');
     }
 };
 
-onAuthStateChanged(auth, (user) => {
-    updateAuthUI(user);
+onAuthStateChanged(auth, async (user) => {
+    if (user) {
+        window.game.state.isAdmin = isAdminUser(user);
+        window.game.state.adminTestMode = user.uid ? localStorage.getItem(`editor-admin-test-mode:${user.uid}`) === 'true' : false;
+        updateAuthUI(user);
+        window.game.state.user = user;
+
+        try {
+            const docSnapshot = await getDoc(doc(db, 'users', user.uid));
+            if (docSnapshot.exists()) {
+                const profileData = docSnapshot.data();
+                window.game.state.userProfile = {
+                    username: profileData.username || user.displayName || 'Player',
+                    avatar: profileData.avatar || '👤',
+                    avatarColor: profileData.avatarColor || 'bg-gray-200',
+                    publicTag: profileData.publicTag || '',
+                    lastProfileChangeAt: profileData.lastProfileChangeAt || null
+                };
+                if (!window.game.state.userProfile.publicTag) {
+                    const publicTag = await generateUniquePublicTag();
+                    await setDoc(doc(db, 'users', user.uid), { publicTag }, { merge: true });
+                    window.game.state.userProfile.publicTag = publicTag;
+                }
+                window.game.state.savedUserProfile = cloneUserProfile(window.game.state.userProfile);
+                window.ui.updateHeaderProfile();
+                window.ui.updateAdminUI();
+            } else {
+                const publicTag = await generateUniquePublicTag();
+                window.game.state.userProfile = {
+                    username: user.displayName || "Player",
+                    avatar: "👤",
+                    avatarColor: "bg-gray-200",
+                    publicTag,
+                    lastProfileChangeAt: null
+                };
+                window.game.state.savedUserProfile = cloneUserProfile(window.game.state.userProfile);
+                await setDoc(doc(db, 'users', user.uid), {
+                    username: window.game.state.userProfile.username,
+                    avatar: window.game.state.userProfile.avatar,
+                    avatarColor: window.game.state.userProfile.avatarColor,
+                    publicTag,
+                    createdAt: new Date(),
+                    updatedAt: new Date()
+                }, { merge: true });
+                window.ui.updateHeaderProfile();
+                window.ui.updateAdminUI();
+                window.ui.toggleModal('modal-profile', true);
+            }
+        } catch (error) {
+            console.error("Profile fetch failed:", error);
+            window.game.state.userProfile = {
+                username: user.displayName || "Player",
+                avatar: "👤",
+                avatarColor: "bg-gray-200",
+                publicTag: '',
+                lastProfileChangeAt: null
+            };
+            window.game.state.savedUserProfile = cloneUserProfile(window.game.state.userProfile);
+            window.ui.updateHeaderProfile();
+            window.ui.updateAdminUI();
+        }
+    } else {
+        window.game.state.user = null;
+        window.game.state.isAdmin = false;
+        window.game.state.adminTestMode = false;
+        window.game.state.userProfile = {
+            username: 'Guest Player',
+            avatar: '👤',
+            avatarColor: 'bg-slate-200',
+            publicTag: '',
+            lastProfileChangeAt: null
+        };
+        window.game.state.savedUserProfile = cloneUserProfile(window.game.state.userProfile);
+        updateAuthUI(null);
+        window.ui.updateHeaderProfile();
+        window.ui.updateAdminUI();
+    }
 });
 
 /**
@@ -216,206 +434,177 @@ const questionTypeDetails = {
  * QUESTION DATABASE - 150+ UNIQUE ITEMS
  */
 const questionDB = [
-    // --- EXTENDED WRITTEN GRAMMAR & PUNCTUATION ---
-    { t: 'binary', cat: 'Punctuation', q: "To my parents, Ayn Rand and God.", a: false, exp: "Ambiguous. Implies parents are Ayn Rand and God. Use Oxford comma." },
-    { t: 'binary', cat: 'Punctuation', q: "I ordered a latte; but I got a cappuccino.", a: false, exp: "Do not use a semicolon with a conjunction (but) connecting clauses." },
-    { t: 'binary', cat: 'Punctuation', q: "Heavy snow is forecast; therefore, the pass is closed.", a: true, exp: "Correct use of semicolon with conjunctive adverb." },
-    { t: 'binary', cat: 'Punctuation', q: "The ingredients are: flour, sugar, and butter.", a: false, exp: "Do not place a colon between a verb and its objects." },
-    { t: 'binary', cat: 'Punctuation', q: "Bring these items: a flashlight, a map, and water.", a: true, exp: "Colon correctly follows an independent clause." },
-    { t: 'mc', cat: 'Punctuation', q: "Choose the correct list:", options: ["Paris, France, London, England, and Rome, Italy.", "Paris, France; London, England; and Rome, Italy."], a: 1, exp: "Use semicolons to separate list items that contain commas." },
-    { t: 'mc', cat: 'Punctuation', q: "Quote punctuation:", options: ["He asked, \"Are you ready?\"", "He asked \"Are you ready?\""], a: 0, exp: "Comma before quote, question mark inside." },
-    { t: 'binary', cat: 'Punctuation', q: "My mother who is a nurse is kind.", a: false, exp: "Non-restrictive clause (you likely have one mother) requires commas." },
-    { t: 'binary', cat: 'Punctuation', q: "My mother, who is a nurse, is kind.", a: true, exp: "Correct punctuation for non-essential detail." },
-    { t: 'binary', cat: 'Hyphens', q: "She is a small business owner.", a: false, exp: "Ambiguous. Is she small? Use 'small-business owner'." },
-    { t: 'binary', cat: 'Hyphens', q: "She is a small-business owner.", a: true, exp: "Correct compound adjective." },
-    
-    // --- SYNTAX & MODIFIERS ---
-    { t: 'binary', cat: 'Syntax', q: "Running to the store, the rain began to fall.", a: false, exp: "Dangling modifier. The rain cannot run." },
-    { t: 'binary', cat: 'Syntax', q: "To improve his results, the experiment was repeated.", a: false, exp: "Dangling modifier. Who improved the results?" },
-    { t: 'binary', cat: 'Syntax', q: "Having finished the assignment, the TV was turned on.", a: false, exp: "Dangling modifier. The TV did not finish the assignment." },
-    { t: 'binary', cat: 'Syntax', q: "While driving, the car broke down.", a: true, exp: "Acceptable ellipsis, though 'While we were driving...' is clearer." },
-    { t: 'binary', cat: 'Syntax', q: "Barking loudly, the dog chased the mailman.", a: true, exp: "Correct. The dog is the one barking." },
-    { t: 'binary', cat: 'Syntax', q: "Exhausted from the trip, the suitcase felt heavy.", a: false, exp: "Misplaced modifier. The suitcase was not exhausted." },
-    { t: 'binary', cat: 'Syntax', q: "She likes swimming, hiking, and to run.", a: false, exp: "Parallelism error. Should be 'running'." },
-    { t: 'binary', cat: 'Syntax', q: "He is smart, funny, and kind.", a: true, exp: "Correct parallel structure (adjectives)." },
-    { t: 'binary', cat: 'Syntax', q: "The car needs washed.", a: false, exp: "Dialectical, but grammatically needs 'to be washed' or 'washing'." },
-    { t: 'binary', cat: 'Syntax', q: "I enjoy reading, writing, and to paint.", a: false, exp: "Parallelism error. Should be 'painting'." },
-    { t: 'mc', cat: 'Syntax', q: "Choose the correct sentence.", options: ["Walking home, the sun set.", "As I walked home, the sun set."], a: 1, exp: "Avoids dangling modifier." },
-    { t: 'mc', cat: 'Syntax', q: "Fix the sentence: 'I only have eyes for you.'", options: ["I have only eyes for you.", "I have eyes only for you.", "No change."], a: 1, exp: "'Only' modifies 'you', not 'eyes'." },
+    // --- PUNCTUATION & FORMATTING ---
+    { t: 'binary', cat: 'Punctuation', q: "To my parents, Ayn Rand and God.", a: false, exp: "Without the Oxford comma before 'and', this sentence implies your parents ARE Ayn Rand and God. Use 'To my parents, Ayn Rand, and God.'" },
+    { t: 'binary', cat: 'Punctuation', q: "We invited the acrobats, clown, and jugglers to the party.", a: true, exp: "The Oxford comma correctly clarifies that JFK and Stalin aren't the acrobats." },
+    { t: 'binary', cat: 'Punctuation', q: "I ordered a latte; but I got a cappuccino.", a: false, exp: "Do not use a semicolon alongside a coordinating conjunction (like 'but'). Use a comma, or drop the 'but'." },
+    { t: 'binary', cat: 'Punctuation', q: "Heavy snow is forecast; therefore, the pass is closed.", a: true, exp: "This is the correct way to use a semicolon to connect two related independent clauses using a conjunctive adverb." },
+    { t: 'binary', cat: 'Punctuation', q: "The ingredients are: flour, sugar, and butter.", a: false, exp: "Do not place a colon between a verb ('are') and its objects. Just write 'The ingredients are flour, sugar, and butter.'" },
+    { t: 'binary', cat: 'Punctuation', q: "Bring these items: a flashlight, a map, and water.", a: true, exp: "A colon is correctly used here because it follows a complete, independent clause ('Bring these items')." },
+    { t: 'mc', cat: 'Punctuation', q: "Which list is punctuated correctly?", options: ["Paris, France, London, England, and Rome, Italy.", "Paris, France; London, England; and Rome, Italy."], a: 1, exp: "When list items themselves contain commas (like city, country), use semicolons to separate the main items to avoid confusion." },
+    { t: 'mc', cat: 'Punctuation', q: "How should this quote be punctuated?", options: ["He asked, \"Are you ready?\"", "He asked \"Are you ready?\""], a: 0, exp: "Use a comma to introduce a direct quotation, and keep the question mark inside the quotation marks if it belongs to the quote." },
+    { t: 'binary', cat: 'Punctuation', q: "My mother who is a nurse is kind.", a: false, exp: "Because you only have one mother, 'who is a nurse' is non-essential information. It must be set off by commas: 'My mother, who is a nurse, is kind.'" },
+    { t: 'binary', cat: 'Punctuation', q: "The boy who broke the window ran away.", a: true, exp: "Correct. 'who broke the window' is essential to identifying WHICH boy ran away, so no commas are used." },
+    { t: 'binary', cat: 'Punctuation', q: "It was raining, we stayed inside.", a: false, exp: "This is a comma splice. You cannot join two complete sentences with just a comma. Use a semicolon, a period, or add 'so/and'." },
+    { t: 'binary', cat: 'Punctuation', q: "He said; 'Hello.'", a: false, exp: "Never use a semicolon to introduce a short quotation. Use a comma: He said, 'Hello.'" },
+    { t: 'binary', cat: 'Punctuation', q: "Dear Hiring Manager:", a: true, exp: "Colons are the standard and correct punctuation for formal business letter greetings." },
+    { t: 'mc', cat: 'Punctuation', q: "Which uses the em dash correctly?", options: ["I am tired - very tired.", "I am tired—very tired."], a: 1, exp: "An em dash (—) is used to show a strong break in thought. A standard hyphen (-) is only used to connect words." },
 
-    // --- PUNCTUATION (Commas, Semicolons, Colons) ---
-    { t: 'binary', cat: 'Punctuation', q: "I love cooking my family and my pets.", a: false, exp: "Missing Oxford Comma implies cannibalism." },
-    { t: 'binary', cat: 'Punctuation', q: "I love cooking, my family, and my pets.", a: true, exp: "Correct list separation." },
-    { t: 'binary', cat: 'Punctuation', q: "It was raining; consequently, we stayed inside.", a: true, exp: "Semicolon connects clauses joined by adverb." },
-    { t: 'binary', cat: 'Punctuation', q: "It was raining, we stayed inside.", a: false, exp: "Comma splice. Needs ';', '.', or conjunction." },
-    { t: 'binary', cat: 'Punctuation', q: "However, I disagree.", a: true, exp: "Introductory adverbs take a comma." },
-    { t: 'binary', cat: 'Punctuation', q: "He said; 'Hello.'", a: false, exp: "Use a comma before quotes, not a semicolon." },
-    { t: 'binary', cat: 'Punctuation', q: "Dear Sir:", a: true, exp: "Colons are used in formal business greetings." },
-    { t: 'binary', cat: 'Punctuation', q: "I bought: apples, oranges, and bananas.", a: false, exp: "Do not put a colon after a verb." },
-    { t: 'binary', cat: 'Punctuation', q: "I bought three things: apples, oranges, and bananas.", a: true, exp: "Colon follows a complete independent clause." },
-    { t: 'binary', cat: 'Punctuation', q: "Its a nice day.", a: false, exp: "Missing apostrophe. It's = It is." },
-    { t: 'binary', cat: 'Punctuation', q: "The dog chased its tail.", a: true, exp: "Possessive 'its' has no apostrophe." },
-    { t: 'binary', cat: 'Punctuation', q: "Lets go home.", a: false, exp: "Let's = Let us." },
-    { t: 'binary', cat: 'Punctuation', q: "The 1990's were great.", a: false, exp: "Plural years do not take apostrophes (1990s)." },
-    { t: 'binary', cat: 'Punctuation', q: "We invited the strippers, JFK, and Stalin.", a: true, exp: "Oxford comma clarifies JFK and Stalin aren't the strippers." },
-    { t: 'mc', cat: 'Punctuation', q: "Possessive of 'James'", options: ["James's", "James'", "Both"], a: 2, exp: "Style guides vary, but both are generally accepted." },
-    { t: 'mc', cat: 'Punctuation', q: "Plural possessive of dog:", options: ["The dog's bone", "The dogs' bone", "The dogs bone"], a: 1, exp: "Dogs (plural) + '." },
-    { t: 'mc', cat: 'Punctuation', q: "Singular possessive:", options: ["The boss's office", "The bosses office"], a: 0, exp: "Boss is singular." },
+    // --- APOSTROPHES & PLURALS ---
+    { t: 'binary', cat: 'Apostrophes', q: "Its a nice day.", a: false, exp: "Missing apostrophe. 'It's' is the contraction for 'It is'. 'Its' shows ownership." },
+    { t: 'binary', cat: 'Apostrophes', q: "The dog chased its tail.", a: true, exp: "Correct. The possessive form of 'it' does not have an apostrophe." },
+    { t: 'binary', cat: 'Apostrophes', q: "Lets go home.", a: false, exp: "Missing apostrophe. 'Let's' is the contraction for 'Let us'." },
+    { t: 'binary', cat: 'Apostrophes', q: "The 1990's were great.", a: false, exp: "Do not use an apostrophe to make decades or acronyms plural. It should be '1990s'." },
+    { t: 'mc', cat: 'Apostrophes', q: "What is the plural possessive of 'dog'?", options: ["The dog's bone", "The dogs' bone", "The dogs bone"], a: 1, exp: "First make it plural (dogs), then add the apostrophe (dogs') to show they own the bone." },
+    { t: 'mc', cat: 'Apostrophes', q: "Which is correct?", options: ["Womens' clothing", "Women's clothing"], a: 1, exp: "Because 'women' is already plural, you just add 's to make it possessive." },
+    { t: 'mc', cat: 'Apostrophes', q: "Which is correct?", options: ["The Joneses are coming over.", "The Jones's are coming over."], a: 0, exp: "To make a name ending in 's' plural, add 'es'. Do not use an apostrophe unless showing ownership." },
+    { t: 'mc', cat: 'Apostrophes', q: "Whose car is this?", options: ["Who's", "Whose"], a: 1, exp: "'Whose' shows possession. 'Who's' means 'Who is'." },
 
-    // --- WORD CHOICE (Diction) ---
-    { t: 'binary', cat: 'Word Choice', q: "The amount of people was high.", a: false, exp: "Use 'number' for countable nouns (people)." },
-    { t: 'binary', cat: 'Word Choice', q: "Fewer than ten items.", a: true, exp: "'Fewer' for countables." },
-    { t: 'binary', cat: 'Word Choice', q: "I have less money.", a: true, exp: "'Less' for uncountables (money)." },
-    { t: 'binary', cat: 'Word Choice', q: "I could care less.", a: false, exp: "Means you care. Should be 'Couldn't care less'." },
-    { t: 'binary', cat: 'Word Choice', q: "Irregardless of the news.", a: false, exp: "Not a standard word. Use 'Regardless'." },
-    { t: 'binary', cat: 'Word Choice', q: "For all intents and purposes.", a: true, exp: "Correct idiom." },
-    { t: 'binary', cat: 'Word Choice', q: "For all intensive purposes.", a: false, exp: "Incorrect idiom." },
-    { t: 'binary', cat: 'Word Choice', q: "She complimented my shoes.", a: true, exp: "Compliment = Praise." },
-    { t: 'binary', cat: 'Word Choice', q: "The wine compliments the cheese.", a: false, exp: "Complement = Completes." },
-    { t: 'binary', cat: 'Word Choice', q: "He is disinterested in the game.", a: false, exp: "Disinterested = Unbiased. Uninterested = Bored." },
-    { t: 'binary', cat: 'Word Choice', q: "A judge must be disinterested.", a: true, exp: "Correct. A judge must be impartial." },
-    { t: 'binary', cat: 'Word Choice', q: "I am anxious to see you.", a: false, exp: "Anxious implies fear. Use 'Eager'." },
-    { t: 'binary', cat: 'Word Choice', q: "She is nauseous.", a: false, exp: "Nauseous = Causing nausea (toxic). Nauseated = Feeling sick." },
-    { t: 'binary', cat: 'Word Choice', q: "The data is correct.", a: true, exp: "'Data' is plural latin, but accepted as singular in modern usage." },
-    { t: 'binary', cat: 'Word Choice', q: "The media are investigating.", a: true, exp: "Media is the plural of medium." },
-    { t: 'mc', cat: 'Word Choice', q: "The detective tried to ____ a confession.", options: ["illicit", "elicit"], a: 1, exp: "Elicit = to draw out. Illicit = illegal." },
-    { t: 'mc', cat: 'Word Choice', q: "The spy was charged with ____ activities.", options: ["illicit", "elicit"], a: 0, exp: "Illicit = illegal/forbidden. Elicit = to draw out." },
-    { t: 'mc', cat: 'Word Choice', q: "The movie had a profound ____ on me.", options: ["affect", "effect"], a: 1, exp: "Effect = Noun (result)." },
-    { t: 'mc', cat: 'Word Choice', q: "The weather will ____ the harvest.", options: ["affect", "effect"], a: 0, exp: "Affect = Verb (to influence)." },
-    { t: 'mc', cat: 'Word Choice', q: "I am going to ____ down for a nap.", options: ["lie", "lay"], a: 0, exp: "Lie = recline (no object)." },
-    { t: 'mc', cat: 'Word Choice', q: "Please ____ the keys on the table.", options: ["lie", "lay"], a: 1, exp: "Lay = to place something (needs object)." },
-    { t: 'mc', cat: 'Word Choice', q: "____ bag is this?", options: ["Who's", "Whose"], a: 1, exp: "Whose = Possessive. Who's = Who is." },
-    { t: 'mc', cat: 'Word Choice', q: "____ going to the party?", options: ["Who's", "Whose"], a: 0, exp: "Who's = Who is." },
-    { t: 'mc', cat: 'Word Choice', q: "The prisoner was ____ at dawn.", options: ["hung", "hanged"], a: 1, exp: "People are hanged (executed). Pictures are hung." },
-    { t: 'mc', cat: 'Word Choice', q: "I ____ the painting in the hall.", options: ["hung", "hanged"], a: 0, exp: "Objects are hung." },
-    { t: 'mc', cat: 'Word Choice', q: "She has ____ money than me.", options: ["less", "fewer"], a: 0, exp: "Less for uncountable nouns (money)." },
-    { t: 'mc', cat: 'Word Choice', q: "I have ____ dollar bills than you.", options: ["less", "fewer"], a: 1, exp: "Fewer for countable nouns (bills)." },
-    { t: 'mc', cat: 'Word Choice', q: "The storm is ____.", options: ["imminent", "eminent"], a: 0, exp: "Imminent = happening soon. Eminent = famous." },
-    { t: 'mc', cat: 'Word Choice', q: "He is an ____ scientist.", options: ["imminent", "eminent"], a: 1, exp: "Eminent = distinguished/famous." },
-    { t: 'mc', cat: 'Word Choice', q: "My shoelace is ____.", options: ["loose", "lose"], a: 0, exp: "Loose = not tight." },
-    { t: 'mc', cat: 'Word Choice', q: "I don't want to ____ the game.", options: ["loose", "lose"], a: 1, exp: "Lose = opposite of win." },
-    { t: 'mc', cat: 'Word Choice', q: "She ____ that she was tired by yawning.", options: ["implied", "inferred"], a: 0, exp: "Speaker implies." },
-    { t: 'mc', cat: 'Word Choice', q: "I ____ from her yawn that she was tired.", options: ["implied", "inferred"], a: 1, exp: "Listener infers." },
-    { t: 'mc', cat: 'Word Choice', q: "The ____ rain (stops and starts) was annoying.", options: ["continuous", "continual"], a: 1, exp: "Continual = recurring. Continuous = never stopping." },
-    { t: 'mc', cat: 'Word Choice', q: "The flow of the river is ____.", options: ["continuous", "continual"], a: 0, exp: "Continuous = non-stop flow." },
-    { t: 'mc', cat: 'Word Choice', q: "I need to go ____ than I went yesterday.", options: ["further", "farther"], a: 1, exp: "Farther = physical distance." },
-    { t: 'mc', cat: 'Word Choice', q: "We need to discuss this ____.", options: ["further", "farther"], a: 0, exp: "Further = metaphorical distance/depth." },
-    { t: 'mc', cat: 'Word Choice', q: "I am ____ to see the new movie!", options: ["anxious", "eager"], a: 1, exp: "Eager = excited. Anxious = nervous/worried." },
-    { t: 'mc', cat: 'Word Choice', q: "I feel ____ about the test tomorrow.", options: ["anxious", "eager"], a: 0, exp: "Anxious implies worry." },
-    { t: 'mc', cat: 'Word Choice', q: "He is ____ of the crime.", options: ["suspected", "suspicious"], a: 0, exp: "Suspected = thought to be guilty. Suspicious = having doubts." },
-    
-    // --- CONVERSATIONAL GRAMMAR (MC - FIX: Removed spoilers) ---
-    { t: 'mc', cat: 'Usage', q: "____ and I are going to the mall.", options: ["Him", "He"], a: 1, exp: "Subject case: 'He is going'." },
-    { t: 'mc', cat: 'Usage', q: "Please give the report to ____.", options: ["she", "her"], a: 1, exp: "Object case: 'Give to her'." },
-    { t: 'mc', cat: 'Usage', q: "This is a secret between you and ____.", options: ["I", "me"], a: 1, exp: "Object of preposition 'between' requires 'me'." },
-    { t: 'mc', cat: 'Usage', q: "____ do you trust?", options: ["Who", "Whom"], a: 1, exp: "Object: 'You trust him' -> Whom." },
-    { t: 'mc', cat: 'Usage', q: "____ is calling?", options: ["Who", "Whom"], a: 0, exp: "Subject: 'He is calling' -> Who." },
-    { t: 'mc', cat: 'Usage', q: "I ____ him yesterday.", options: ["seen", "saw"], a: 1, exp: "'Seen' requires a helper verb (have seen). 'Saw' is simple past." },
-    { t: 'mc', cat: 'Usage', q: "I ____ my homework.", options: ["done", "did"], a: 1, exp: "'Done' requires a helper verb (have done)." },
-    { t: 'mc', cat: 'Usage', q: "If I ____ you, I would accept.", options: ["was", "were"], a: 1, exp: "Subjunctive mood (hypothetical) requires 'were'." },
-    { t: 'mc', cat: 'Usage', q: "I wish I ____ taller.", options: ["was", "were"], a: 1, exp: "Subjunctive mood for wishes." },
-    { t: 'mc', cat: 'Usage', q: "The team ____ winning the game.", options: ["is", "are"], a: 0, exp: "Collective nouns (team) are singular in American English." },
-    { t: 'mc', cat: 'Usage', q: "The data ____ correct.", options: ["is", "are"], a: 0, exp: "Data is technically plural, but treated as singular in modern usage." },
-    { t: 'mc', cat: 'Usage', q: "None of the pie ____ left.", options: ["is", "are"], a: 0, exp: "'None' of a mass noun is singular." },
-    { t: 'mc', cat: 'Usage', q: "None of the guests ____ arrived.", options: ["has", "have"], a: 1, exp: "'None' of a plural count noun can be plural." },
-    { t: 'mc', cat: 'Usage', q: "There ____ a dog and a cat.", options: ["is", "are"], a: 0, exp: "Verb matches the *first* noun in the list (dog)." },
-    
-    // --- ADJECTIVES & ADVERBS (MC) ---
-    { t: 'mc', cat: 'Adjectives', q: "I feel ____.", options: ["bad", "badly"], a: 0, exp: "Linking verb 'feel' takes an adjective. 'Badly' means your sense of touch is broken." },
-    { t: 'mc', cat: 'Adjectives', q: "The team played ____.", options: ["bad", "badly"], a: 1, exp: "Action verb 'played' takes an adverb." },
-    { t: 'mc', cat: 'Adjectives', q: "He runs ____.", options: ["good", "well"], a: 1, exp: "'Well' is the adverb form of good." },
-    { t: 'mc', cat: 'Adjectives', q: "The soup tastes ____.", options: ["good", "well"], a: 0, exp: "Linking verb 'tastes' takes an adjective." },
-    { t: 'mc', cat: 'Adjectives', q: "I am ____ tired.", options: ["real", "really"], a: 1, exp: "Adverbs (really) modify adjectives (tired)." },
-    
-    // --- HOMOPHONES IN CONTEXT (MC) ---
-    { t: 'mc', cat: 'Homophones', q: "I need a ____ of paper.", options: ["piece", "peace"], a: 0, exp: "Piece = part." },
-    { t: 'mc', cat: 'Homophones', q: "War and ____.", options: ["Piece", "Peace"], a: 1, exp: "Peace = calm." },
-    { t: 'mc', cat: 'Homophones', q: "The ____ consists of five people.", options: ["board", "bored"], a: 0, exp: "Board = group/plank." },
-    { t: 'mc', cat: 'Homophones', q: "I am ____ of this movie.", options: ["board", "bored"], a: 1, exp: "Bored = uninterested." },
-    { t: 'mc', cat: 'Homophones', q: "She walked ____ the store.", options: ["by", "buy"], a: 0, exp: "By = preposition." },
-    { t: 'mc', cat: 'Homophones', q: "I want to ____ a car.", options: ["by", "buy"], a: 1, exp: "Buy = purchase." },
-    { t: 'mc', cat: 'Homophones', q: "The ____ of the school is strict.", options: ["principal", "principle"], a: 0, exp: "Principal = Head (Pal)." },
-    { t: 'mc', cat: 'Homophones', q: "It is a matter of ____.", options: ["principal", "principle"], a: 1, exp: "Principle = Rule." },
-    { t: 'mc', cat: 'Homophones', q: "The car remained ____.", options: ["stationary", "stationery"], a: 0, exp: "Stationary = Parked." },
-    { t: 'mc', cat: 'Homophones', q: "I wrote on fancy ____.", options: ["stationary", "stationery"], a: 1, exp: "Stationery = Paper." },
-    { t: 'mc', cat: 'Homophones', q: "Please ____ the rules.", options: ["cite", "site"], a: 0, exp: "Cite = to reference." },
-    { t: 'mc', cat: 'Homophones', q: "This is a construction ____.", options: ["cite", "site"], a: 1, exp: "Site = location." },
-    { t: 'mc', cat: 'Homophones', q: "The ____ of the story.", options: ["moral", "morale"], a: 0, exp: "Moral = lesson." },
-    { t: 'mc', cat: 'Homophones', q: "Team ____ is high.", options: ["moral", "morale"], a: 1, exp: "Morale = spirit." },
-    
-    // --- SYNTAX & STRUCTURE (MC) ---
-    { t: 'mc', cat: 'Syntax', q: "Choose the correct sentence:", options: ["Running home, the rain fell.", "Running home, I got wet."], a: 1, exp: "Fixes dangling modifier (the rain didn't run)." },
-    { t: 'mc', cat: 'Syntax', q: "Choose the correct sentence:", options: ["He only eats pizza.", "He eats only pizza."], a: 1, exp: "'Only' modifies pizza. (He doesn't eat the plate)." },
-    { t: 'mc', cat: 'Syntax', q: "Choose the correct sentence:", options: ["I nearly ate the whole cake.", "I ate nearly the whole cake."], a: 1, exp: "'Nearly' modifies 'the whole cake'." },
-    { t: 'mc', cat: 'Style', q: "Choose the active voice:", options: ["The ball was thrown by John.", "John threw the ball."], a: 1, exp: "Active voice is stronger." },
-    { t: 'mc', cat: 'Style', q: "Simplify: 'In the event that'", options: ["If", "When"], a: 0, exp: "Be concise." },
-    { t: 'mc', cat: 'Style', q: "Simplify: 'Due to the fact that'", options: ["Because", "Although"], a: 0, exp: "Be concise." },
+    // --- SYNTAX, MODIFIERS & PARALLELISM ---
+    { t: 'binary', cat: 'Syntax', q: "Running to the store, the rain began to fall.", a: false, exp: "This is a dangling modifier. The phrase 'Running to the store' must immediately precede the person who is running, not the rain." },
+    { t: 'binary', cat: 'Syntax', q: "To improve his results, the experiment was repeated.", a: false, exp: "Dangling modifier. The sentence is missing the person who is trying 'to improve his results'. For example: 'To improve his results, the scientist repeated the experiment.'" },
+    { t: 'binary', cat: 'Syntax', q: "Barking loudly, the dog chased the mailman.", a: true, exp: "Correct. The descriptive phrase 'Barking loudly' is immediately followed by the noun it describes (the dog)." },
+    { t: 'binary', cat: 'Syntax', q: "Exhausted from the trip, the suitcase felt heavy.", a: false, exp: "This is a misplaced modifier. Because 'the suitcase' comes immediately after the comma, the sentence accidentally implies the suitcase was exhausted." },
+    { t: 'binary', cat: 'Syntax', q: "She likes swimming, hiking, and to run.", a: false, exp: "This breaks parallelism. Items in a list must follow the same grammatical pattern. It should be 'swimming, hiking, and running'." },
+    { t: 'binary', cat: 'Syntax', q: "He is smart, funny, and kind.", a: true, exp: "Correct parallel structure. All three items in the list are simple adjectives." },
+    { t: 'mc', cat: 'Syntax', q: "Fix the sentence: 'I only have eyes for you.'", options: ["I have only eyes for you.", "I have eyes only for you.", "No change."], a: 1, exp: "Modifiers like 'only' should be placed exactly next to the word they modify. You don't 'only have' eyes, you have eyes 'only for you'." },
+    { t: 'mc', cat: 'Syntax', q: "Choose the correct sentence:", options: ["I nearly ate the whole cake.", "I ate nearly the whole cake."], a: 1, exp: "'Nearly' modifies 'the whole cake'. If you 'nearly ate' it, it means you thought about eating it but didn't." },
+    { t: 'mc', cat: 'Style', q: "Choose the active voice:", options: ["The ball was thrown by John.", "John threw the ball."], a: 1, exp: "Active voice (where the subject performs the action) is stronger and more direct than passive voice." },
 
-    // --- QUICKFIRE CHECKS (Binary - Cleaned up to be examples) ---
-    { t: 'binary', cat: 'Spelling', q: "I will definately be there.", a: false, exp: "Definitely." },
+    // --- WORD CHOICE & USAGE (Diction) ---
+    { t: 'binary', cat: 'Word Choice', q: "The amount of people was high.", a: false, exp: "Use 'amount' for things you can't count (water, courage). Use 'number' for things you can count (people, cars)." },
+    { t: 'binary', cat: 'Word Choice', q: "I have less dollars than you.", a: false, exp: "Use 'fewer' for items you can count individually (dollars). Use 'less' for bulk concepts (money)." },
+    { t: 'binary', cat: 'Word Choice', q: "I couldn't care less.", a: true, exp: "Correct. This idiom means your care is at zero. Saying 'I could care less' implies you still care a little bit." },
+    { t: 'binary', cat: 'Word Choice', q: "She complimented my shoes.", a: true, exp: "Correct. A 'compliment' is praise. A 'complement' is something that completes or goes well with something else." },
+    { t: 'binary', cat: 'Word Choice', q: "The wine compliments the cheese.", a: false, exp: "Incorrect. The wine doesn't speak to praise the cheese; it 'complements' (completes/enhances) it." },
+    { t: 'binary', cat: 'Word Choice', q: "He is disinterested in the game.", a: false, exp: "If he is bored, he is 'uninterested'. 'Disinterested' means impartial or unbiased (like a referee)." },
+    { t: 'binary', cat: 'Word Choice', q: "I am anxious to see you.", a: false, exp: "'Anxious' implies fear or dread. If you are looking forward to it, use 'eager'." },
+    { t: 'binary', cat: 'Word Choice', q: "She is nauseous.", a: false, exp: "Technically, 'nauseous' means causing nausea (like toxic fumes). If you feel sick, you are 'nauseated'. (Though 'nauseous' is highly common in casual speech)." },
+    { t: 'binary', cat: 'Word Choice', q: "The media are investigating.", a: true, exp: "Correct. 'Media' is the plural form of the singular word 'medium'." },
+    { t: 'mc', cat: 'Word Choice', q: "The detective tried to ____ a confession.", options: ["illicit", "elicit"], a: 1, exp: "To 'elicit' means to draw out or extract. 'Illicit' means illegal." },
+    { t: 'mc', cat: 'Word Choice', q: "The movie had a profound ____ on me.", options: ["affect", "effect"], a: 1, exp: "Use 'effect' when you need a noun (the result). Use 'affect' when you need a verb (the action of changing something)." },
+    { t: 'mc', cat: 'Word Choice', q: "I am going to ____ down for a nap.", options: ["lie", "lay"], a: 0, exp: "You 'lie' yourself down. You 'lay' an object down (like laying a book on a table)." },
+    { t: 'mc', cat: 'Word Choice', q: "The prisoner was ____ at dawn.", options: ["hung", "hanged"], a: 1, exp: "When referring to the execution of a human being, the past tense is 'hanged'. Pictures and coats are 'hung'." },
+    { t: 'mc', cat: 'Word Choice', q: "The storm is ____.", options: ["imminent", "eminent"], a: 0, exp: "'Imminent' means about to happen. 'Eminent' means distinguished or famous." },
+    { t: 'mc', cat: 'Word Choice', q: "I don't want to ____ the game.", options: ["loose", "lose"], a: 1, exp: "'Lose' is the opposite of win. 'Loose' is the opposite of tight." },
+    { t: 'mc', cat: 'Word Choice', q: "She ____ that she was tired by yawning.", options: ["implied", "inferred"], a: 0, exp: "The person giving the signal 'implies'. The person receiving the signal 'infers'." },
+    { t: 'mc', cat: 'Word Choice', q: "The ____ rain (stopping and starting all day) was annoying.", options: ["continuous", "continual"], a: 1, exp: "'Continual' means happening repeatedly with breaks. 'Continuous' means never stopping at all." },
+    { t: 'mc', cat: 'Word Choice', q: "I need to go ____ down the road.", options: ["further", "farther"], a: 1, exp: "Use 'farther' for measurable physical distance. Use 'further' for metaphorical depth or time." },
+
+    // --- PRONOUNS & VERB AGREEMENT ---
+    { t: 'mc', cat: 'Pronouns', q: "____ and I are going to the mall.", options: ["Him", "He"], a: 1, exp: "If you remove 'and I', you would say 'He is going', not 'Him is going'." },
+    { t: 'mc', cat: 'Pronouns', q: "Please give the report to ____.", options: ["she", "her"], a: 1, exp: "Use the object case 'her' after a preposition like 'to'." },
+    { t: 'mc', cat: 'Pronouns', q: "This is a secret between you and ____.", options: ["I", "me"], a: 1, exp: "'Between' is a preposition, which must be followed by the object case 'me', never 'I'." },
+    { t: 'mc', cat: 'Pronouns', q: "____ do you trust?", options: ["Who", "Whom"], a: 1, exp: "Rephrase it: Do you trust HIM or HE? Since it's HIM, use WHOM." },
+    { t: 'mc', cat: 'Usage', q: "If I ____ you, I would accept.", options: ["was", "were"], a: 1, exp: "When speaking hypothetically (the subjunctive mood), always use 'were' instead of 'was'." },
+    { t: 'mc', cat: 'Agreement', q: "The team ____ winning the game.", options: ["is", "are"], a: 0, exp: "In American English, collective nouns like 'team', 'group', or 'family' are treated as a single unit (singular)." },
+    { t: 'mc', cat: 'Agreement', q: "None of the pie ____ left.", options: ["is", "are"], a: 0, exp: "When 'none' refers to a mass noun (like pie or water), it takes a singular verb." },
+    { t: 'mc', cat: 'Agreement', q: "There ____ a dog and a cat in the yard.", options: ["is", "are"], a: 0, exp: "When a list follows 'There is/are', the verb matches the very first noun in the list. Since 'a dog' is singular, use 'is'." },
+    { t: 'mc', cat: 'Agreement', q: "Neither the boss nor the workers ____ happy.", options: ["was", "were"], a: 1, exp: "In a neither/nor pairing, the verb must agree with the noun closest to it ('workers')." },
+
+    // --- ADJECTIVES & ADVERBS ---
+    { t: 'mc', cat: 'Adjectives', q: "I feel ____.", options: ["bad", "badly"], a: 0, exp: "'Feel' is a linking verb that describes your state of being, so it takes an adjective. Saying 'I feel badly' implies your fingers don't work." },
+    { t: 'mc', cat: 'Adjectives', q: "He runs ____.", options: ["good", "well"], a: 1, exp: "Action verbs ('runs') must be modified by adverbs. 'Well' is the adverb form of 'good'." },
+    { t: 'mc', cat: 'Adjectives', q: "I am ____ tired.", options: ["real", "really"], a: 1, exp: "Adverbs ('really') are used to modify adjectives ('tired'). 'Real' is an adjective." },
+
+    // --- REDUNDANCY & STYLE ---
+    { t: 'binary', cat: 'Style', q: "He entered his PIN number into the ATM machine.", a: false, exp: "Redundant. PIN stands for Personal Identification Number, and ATM stands for Automated Teller Machine." },
+    { t: 'binary', cat: 'Style', q: "It was an unexpected surprise.", a: false, exp: "Redundant. All surprises are unexpected by definition." },
+    { t: 'binary', cat: 'Style', q: "We need to learn the basic fundamentals.", a: false, exp: "Redundant. Fundamentals are inherently basic." },
+    { t: 'binary', cat: 'Style', q: "They arrived at exactly the same time.", a: false, exp: "Redundant. If things are the same, they are already exact." },
+    { t: 'mc', cat: 'Style', q: "Simplify: 'In the event that it rains'", options: ["If it rains", "When it rains"], a: 0, exp: "Always favor concise, direct language over bloated corporate jargon." },
+    { t: 'mc', cat: 'Style', q: "Simplify: 'At this point in time'", options: ["Currently", "Now"], a: 1, exp: "'Now' is the most direct and punchy replacement for this common filler phrase." },
+
+    // --- PHRASAL VERBS & SPACING ---
+    { t: 'binary', cat: 'Spelling', q: "I need to setup my new computer.", a: false, exp: "'Setup' is a noun (The setup is nice). When used as an action, it must be two words: 'set up'." },
+    { t: 'binary', cat: 'Spelling', q: "Please log in to your account.", a: true, exp: "Correct. 'Log in' is the verb action. 'Login' is the noun (Here is my login)." },
+    { t: 'binary', cat: 'Spelling', q: "I brush my teeth everyday.", a: false, exp: "'Everyday' is an adjective meaning common (an everyday occurrence). The action of doing something daily is two words: 'every day'." },
+    { t: 'binary', cat: 'Spelling', q: "We need to workout today.", a: false, exp: "'Workout' is a noun (That was a good workout). The action verb must be separated: 'work out'." },
+    { t: 'binary', cat: 'Spelling', q: "Let's meet sometime next week.", a: true, exp: "Correct. 'Sometime' means an unspecified point in time. 'Some time' means a duration (It took some time)." },
+
+    // --- HYPHENS ---
+    { t: 'binary', cat: 'Hyphens', q: "She is a small business owner.", a: false, exp: "Without a hyphen, this could mean the owner is physically small. It should be 'small-business owner'." },
+    { t: 'binary', cat: 'Hyphens', q: "He is a well known author.", a: false, exp: "Compound adjectives coming BEFORE the noun they modify must be hyphenated: 'well-known author'." },
+    { t: 'binary', cat: 'Hyphens', q: "The author is well known.", a: true, exp: "Correct. When the compound adjective comes AFTER the noun, it is usually not hyphenated." },
+    { t: 'binary', cat: 'Hyphens', q: "It is a highly-effective strategy.", a: false, exp: "Never put a hyphen after an adverb ending in '-ly'." },
+
+    // --- CAPITALIZATION ---
+    { t: 'binary', cat: 'Capitalization', q: "I spoke to President Lincoln.", a: true, exp: "Correct. Capitalize a job title when it comes directly before a name." },
+    { t: 'binary', cat: 'Capitalization', q: "The President of the company resigned.", a: false, exp: "Job titles are generally strictly lowercased when used alone or after a name (unless referring to a specific head of state in certain style guides)." },
+    { t: 'binary', cat: 'Capitalization', q: "I live in the South.", a: true, exp: "Correct. Capitalize directions when they refer to a specific geographic region." },
+    { t: 'binary', cat: 'Capitalization', q: "Drive South for two miles.", a: false, exp: "Do not capitalize directions when they simply refer to compass routing." },
+    { t: 'binary', cat: 'Capitalization', q: "I am taking History 101.", a: true, exp: "Correct. Capitalize specific course titles." },
+    { t: 'binary', cat: 'Capitalization', q: "I am taking a History class.", a: false, exp: "Do not capitalize general academic subjects unless they are languages (like English or French)." },
+
+    // --- QUICKFIRE SPELLING & HOMOPHONES ---
+    { t: 'binary', cat: 'Spelling', q: "I will definately be there.", a: false, exp: "The correct spelling is 'definitely'. A helpful trick is to remember it contains the word 'finite'." },
     { t: 'binary', cat: 'Spelling', q: "Please separate the items.", a: true, exp: "Remember: There is 'a rat' in separate." },
-    { t: 'binary', cat: 'Punctuation', q: "Let's eat Grandma!", a: false, exp: "Missing comma saves lives: 'Let's eat, Grandma!'" },
-    { t: 'binary', cat: 'Usage', q: "I could care less about the result.", a: false, exp: "Means you *do* care. Should be 'Couldn't care less'." },
-    { t: 'binary', cat: 'Usage', q: "For all intents and purposes.", a: true, exp: "Correct usage." },
-    { t: 'binary', cat: 'Usage', q: "Irregardless of the outcome.", a: false, exp: "'Irregardless' is non-standard. Use 'Regardless'." },
-    { t: 'binary', cat: 'Word Choice', q: "I have alot of friends.", a: false, exp: "'Alot' is not a word. 'A lot'." },
-    { t: 'binary', cat: 'Word Choice', q: "He snuck out of the house.", a: true, exp: "'Snuck' is accepted in modern American English." },
-    { t: 'binary', cat: 'Usage', q: "He graduated college in 2010.", a: false, exp: "He graduated FROM college." },
-    { t: 'binary', cat: 'Usage', q: "Where are you at?", a: false, exp: "Avoid ending sentences with prepositions. 'Where are you?'" },
-    { t: 'binary', cat: 'Comparison', q: "He is the oldest of the two brothers.", a: false, exp: "Of two: Older. Of three+: Oldest." },
-    { t: 'binary', cat: 'Comparison', q: "That painting is very unique.", a: false, exp: "Unique is absolute. It cannot be 'very' unique." },
-    { t: 'binary', cat: 'Usage', q: "You need to nip it in the butt.", a: false, exp: "Nip it in the BUD." },
-    { t: 'binary', cat: 'Usage', q: "It is a mute point.", a: false, exp: "MOOT point." },
-    { t: 'binary', cat: 'Usage', q: "He is at your beckon call.", a: false, exp: "Beck AND call." },
-    { t: 'binary', cat: 'Usage', q: "First come, first serve.", a: false, exp: "First come, first SERVED." },
-    { t: 'binary', cat: 'Usage', q: "They are one in the same.", a: false, exp: "One AND the same." },
-    { t: 'binary', cat: 'Usage', q: "Case and point.", a: false, exp: "Case IN point." },
-    { t: 'binary', cat: 'Homophones', q: "Please read aloud.", a: true, exp: "Correct." },
-    { t: 'binary', cat: 'Homophones', q: "He has bare feet.", a: true, exp: "Correct." },
-    { t: 'binary', cat: 'Homophones', q: "I can't bare it anymore.", a: false, exp: "Bear it." },
-    { t: 'binary', cat: 'Homophones', q: "I am board.", a: false, exp: "Bored." },
-    { t: 'binary', cat: 'Homophones', q: "Hit the breaks!", a: false, exp: "Brakes." },
-    { t: 'binary', cat: 'Homophones', q: "We went by the book.", a: true, exp: "Correct." },
-    { t: 'binary', cat: 'Homophones', q: "I lost my cell phone.", a: true, exp: "Correct." },
-    { t: 'binary', cat: 'Homophones', q: "That is a nice cent.", a: false, exp: "Scent." },
-    { t: 'binary', cat: 'Homophones', q: "I need to dye my hair.", a: true, exp: "Correct." },
-    { t: 'binary', cat: 'Homophones', q: "Bake with flower.", a: false, exp: "Flour." },
-    { t: 'binary', cat: 'Homophones', q: "Heal of foot.", a: false, exp: "Heel." },
-    { t: 'binary', cat: 'Homophones', q: "Come here.", a: true, exp: "Correct." },
-    { t: 'binary', cat: 'Homophones', q: "I ate the whole pie.", a: true, exp: "Correct." },
-    { t: 'binary', cat: 'Homophones', q: "This is our house.", a: true, exp: "Correct." },
-    { t: 'binary', cat: 'Homophones', q: "I no him well.", a: false, exp: "Know." },
-    { t: 'binary', cat: 'Homophones', q: "Nice to meat you.", a: false, exp: "Meet." },
-    { t: 'binary', cat: 'Homophones', q: "We one the game.", a: false, exp: "Won." },
-    { t: 'binary', cat: 'Homophones', q: "Use the pail bucket.", a: true, exp: "Correct." },
-    { t: 'binary', cat: 'Homophones', q: "I bought a plane ticket.", a: true, exp: "Correct." },
-    { t: 'binary', cat: 'Homophones', q: "I ate a cinnamon role.", a: false, exp: "Roll." },
-    { t: 'binary', cat: 'Homophones', q: "This boat is for sail.", a: false, exp: "Sale." },
-    { t: 'binary', cat: 'Homophones', q: "Check the website.", a: true, exp: "Correct." },
-    { t: 'binary', cat: 'Homophones', q: "Walk up the stare case.", a: false, exp: "Stair." },
-    { t: 'binary', cat: 'Homophones', q: "Read a fairy tail.", a: false, exp: "Tale." },
-    { t: 'binary', cat: 'Homophones', q: "It is a waist of time.", a: false, exp: "Waste." },
-    { t: 'binary', cat: 'Homophones', q: "Lose some wait.", a: false, exp: "Weight." },
-    { t: 'binary', cat: 'Homophones', q: "I saw him last weak.", a: false, exp: "Week." },
-    { t: 'binary', cat: 'Homophones', q: "Where a hat.", a: false, exp: "Wear." },
-    { t: 'binary', cat: 'Homophones', q: "It is nice weather.", a: true, exp: "Correct." },
-    { t: 'binary', cat: 'Homophones', q: "Make a write turn.", a: false, exp: "Right." }
+    { t: 'binary', cat: 'Spelling', q: "It was a weird experience.", a: true, exp: "Correct. 'Weird' is one of the most famous exceptions to the 'I before E except after C' rule." },
+    { t: 'binary', cat: 'Spelling', q: "The hotel can accomodate us.", a: false, exp: "'Accommodate' is tricky because it has two C's AND two M's." },
+    { t: 'binary', cat: 'Spelling', q: "He is a liaison for the company.", a: true, exp: "Correct spelling. It has three vowels in a row: i-a-i." },
+    { t: 'binary', cat: 'Spelling', q: "It is a priviledge.", a: false, exp: "The correct spelling is 'privilege'. There is no 'D' in the word." },
+    { t: 'binary', cat: 'Spelling', q: "This supersedes the old rule.", a: true, exp: "Correct. 'Supersede' is the only word in English that ends in -sede." },
+    { t: 'binary', cat: 'Spelling', q: "We reached a concensus.", a: false, exp: "The correct spelling is 'consensus', rooted in the word 'consent'." },
+    { t: 'binary', cat: 'Usage', q: "I could care less about the result.", a: false, exp: "If you 'could care less', it means you currently care at least a little bit. The correct phrase is 'couldn't care less'." },
+    { t: 'binary', cat: 'Usage', q: "Irregardless of the outcome.", a: false, exp: "'Irregardless' is non-standard and a double negative. Use 'Regardless'." },
+    { t: 'binary', cat: 'Word Choice', q: "I have alot of friends.", a: false, exp: "'Alot' is not a recognized word. It should always be written as two separate words: 'a lot'." },
+    { t: 'binary', cat: 'Word Choice', q: "He snuck out of the house.", a: true, exp: "While 'sneaked' is the traditional past tense, 'snuck' is widely accepted in modern American English." },
+    { t: 'binary', cat: 'Usage', q: "He graduated college in 2010.", a: false, exp: "You don't graduate a college; you graduate FROM a college." },
+    { t: 'binary', cat: 'Usage', q: "Where are you at?", a: false, exp: "The 'at' is redundant. Standard grammar avoids ending sentences with prepositions when they add no meaning. Just ask, 'Where are you?'" },
+    { t: 'binary', cat: 'Comparison', q: "He is the oldest of the two brothers.", a: false, exp: "When comparing exactly two things, use the comparative form '-er' ('older'). Use '-est' ('oldest') for three or more." },
+    { t: 'binary', cat: 'Comparison', q: "That painting is very unique.", a: false, exp: "'Unique' means 'one of a kind'. Since something cannot be 'very' one of a kind, you should not use modifiers with it." },
+    { t: 'binary', cat: 'Usage', q: "You need to nip it in the butt.", a: false, exp: "The correct idiom is 'nip it in the bud,' comparing stopping a problem early to snipping a flower bud before it blooms." },
+    { t: 'binary', cat: 'Usage', q: "It is a mute point.", a: false, exp: "The correct phrase is 'moot point', meaning an issue that is debatable or no longer relevant, not 'mute' (silent)." },
+    { t: 'binary', cat: 'Usage', q: "He is at your beckon call.", a: false, exp: "The correct idiom is 'beck and call'. 'Beck' is a shortened form of the word 'beckon'." },
+    { t: 'binary', cat: 'Usage', q: "First come, first serve.", a: false, exp: "The phrase is 'First come, first served', meaning the first person to arrive is the first to BE served." },
+    { t: 'binary', cat: 'Usage', q: "They are one in the same.", a: false, exp: "The correct phrase is 'one and the same', emphasizing that two things are exactly identical." },
+    { t: 'binary', cat: 'Usage', q: "Case and point.", a: false, exp: "The correct idiom is 'case in point', meaning an instance that serves as a perfect example of what is being discussed." },
+    
+    // --- HOMOPHONES ---
+    { t: 'mc', cat: 'Homophones', q: "I need a ____ of paper.", options: ["piece", "peace"], a: 0, exp: "'Piece' means a part of something. 'Peace' means calm or without war." },
+    { t: 'mc', cat: 'Homophones', q: "The ____ of the school is strict.", options: ["principal", "principle"], a: 0, exp: "A 'principal' is the head of a school (remember: they are your 'pal'). A 'principle' is a fundamental rule." },
+    { t: 'mc', cat: 'Homophones', q: "It is a matter of ____.", options: ["principal", "principle"], a: 1, exp: "A 'principle' is a rule, belief, or moral." },
+    { t: 'mc', cat: 'Homophones', q: "The car remained ____.", options: ["stationary", "stationery"], a: 0, exp: "'Stationary' with an 'A' means parked or not moving." },
+    { t: 'mc', cat: 'Homophones', q: "I wrote on fancy ____.", options: ["stationary", "stationery"], a: 1, exp: "'Stationery' with an 'E' refers to paper and envelopes (E for Envelope)." },
+    { t: 'mc', cat: 'Homophones', q: "Please ____ the rules.", options: ["cite", "site"], a: 0, exp: "To 'cite' means to reference or quote something." },
+    { t: 'mc', cat: 'Homophones', q: "This is a construction ____.", options: ["cite", "site"], a: 1, exp: "A 'site' is a physical location or area." },
+    { t: 'mc', cat: 'Homophones', q: "The ____ of the story.", options: ["moral", "morale"], a: 0, exp: "A 'moral' is a lesson learned from a story." },
+    { t: 'mc', cat: 'Homophones', q: "Team ____ is high.", options: ["moral", "morale"], a: 1, exp: "'Morale' refers to the spirit, confidence, and enthusiasm of a group." },
+    { t: 'mc', cat: 'Homophones', q: "Washington D.C. is the ____.", options: ["capital", "capitol"], a: 0, exp: "A 'capital' refers to the city itself, or uppercase letters, or money." },
+    { t: 'mc', cat: 'Homophones', q: "The meeting is in the ____ building.", options: ["capital", "capitol"], a: 1, exp: "The 'capitol' (with an O) refers exclusively to the physical building where legislators meet." },
+    { t: 'binary', cat: 'Homophones', q: "Please read aloud.", a: true, exp: "Correct. 'Aloud' means speaking so others can hear, whereas 'allowed' means permitted." },
+    { t: 'binary', cat: 'Homophones', q: "He has bare feet.", a: true, exp: "Correct. 'Bare' means uncovered, while 'bear' refers to the animal or to carry a burden." },
+    { t: 'binary', cat: 'Homophones', q: "I can't bare it anymore.", a: false, exp: "Use 'bear' when meaning to endure or carry a weight. 'Bare' means uncovered or naked." },
+    { t: 'binary', cat: 'Homophones', q: "Hit the breaks!", a: false, exp: "Use 'brakes' for the device that stops a vehicle. 'Breaks' refers to shattering something or taking a pause." },
+    { t: 'binary', cat: 'Homophones', q: "That is a nice cent.", a: false, exp: "A 'cent' is money. Use 'scent' for a smell, or 'sent' for the past tense of send." },
+    { t: 'binary', cat: 'Homophones', q: "Bake with flower.", a: false, exp: "Use 'flour' for the ground grain used in baking. A 'flower' is the blooming part of a plant." },
+    { t: 'binary', cat: 'Homophones', q: "Heal of foot.", a: false, exp: "The back of your foot is the 'heel'. 'Heal' means to recover from an injury." },
+    { t: 'binary', cat: 'Homophones', q: "I no him well.", a: false, exp: "Use 'know' for having knowledge or familiarity. 'No' is the opposite of yes." },
+    { t: 'binary', cat: 'Homophones', q: "Nice to meat you.", a: false, exp: "Use 'meet' when encountering someone. 'Meat' is animal flesh used for food." },
+    { t: 'binary', cat: 'Homophones', q: "We one the game.", a: false, exp: "Use 'won' for the past tense of win. 'One' is the number." },
+    { t: 'binary', cat: 'Homophones', q: "I ate a cinnamon role.", a: false, exp: "Use 'roll' for bread or the action of spinning. A 'role' is a part played by an actor or a function." },
+    { t: 'binary', cat: 'Homophones', q: "This boat is for sail.", a: false, exp: "Use 'sale' for the exchange of goods for money. A 'sail' catches the wind on a boat." },
+    { t: 'binary', cat: 'Homophones', q: "Walk up the stare case.", a: false, exp: "Use 'stair' for the steps you walk on. 'Stare' means to look at something intently." },
+    { t: 'binary', cat: 'Homophones', q: "Read a fairy tail.", a: false, exp: "A 'tale' is a story. A 'tail' is the appendage at the back of an animal." },
+    { t: 'binary', cat: 'Homophones', q: "It is a waist of time.", a: false, exp: "Use 'waste' for squandering something or for garbage. Your 'waist' is the middle of your body." },
+    { t: 'binary', cat: 'Homophones', q: "Lose some wait.", a: false, exp: "Use 'weight' for how heavy something is. 'Wait' means to stay where you are or delay action." },
+    { t: 'binary', cat: 'Homophones', q: "I saw him last weak.", a: false, exp: "Use 'week' for the seven-day period. 'Weak' means lacking physical strength." },
+    { t: 'binary', cat: 'Homophones', q: "Where a hat.", a: false, exp: "Use 'wear' for putting on clothing. 'Where' asks for a location." },
+    { t: 'binary', cat: 'Homophones', q: "Make a write turn.", a: false, exp: "Use 'right' for a direction or meaning correct. 'Write' means to form letters or words." }
 ];
 
 // Generator to flesh out list to 150+ without bloating code size
 // We create variations of common templates
 const templates = [
-    { t: 'binary', cat: 'Homophones', base: "They're going to the park.", a: true, exp: "Correct usage." },
-    { t: 'binary', cat: 'Homophones', base: "Their going to the park.", a: false, exp: "Wrong 'There/Their/They're'." },
-    { t: 'binary', cat: 'Homophones', base: "There going to the park.", a: false, exp: "Wrong 'There/Their/They're'." },
-    { t: 'binary', cat: 'Homophones', base: "The book is over there.", a: true, exp: "Correct usage." },
-    { t: 'binary', cat: 'Homophones', base: "It is their book.", a: true, exp: "Correct usage." },
-    { t: 'binary', cat: 'Apostrophes', base: "The 1990's were fun.", a: false, exp: "No apostrophe for plural years (1990s)." },
-    { t: 'binary', cat: 'Apostrophes', base: "The 1990s were fun.", a: true, exp: "Correct pluralization." },
-    { t: 'mc', cat: 'Subject-Verb', q: "The group of students ___ loud.", options: ["is", "are"], a: 0, exp: "Group is singular." },
-    { t: 'mc', cat: 'Subject-Verb', q: "A bouquet of flowers ___ arrived.", options: ["has", "have"], a: 0, exp: "Bouquet is singular." },
-    { t: 'mc', cat: 'Pronouns', q: "Him and I went.", options: ["Him and I", "He and I"], a: 1, exp: "Subject case." },
-    { t: 'mc', cat: 'Pronouns', q: "Give it to ___.", options: ["Steve and I", "Steve and me"], a: 1, exp: "Object case." }
+    { t: 'binary', cat: 'Homophones', base: "They're going to the park.", a: true, exp: "'They're' is the contraction for 'They are'." },
+    { t: 'binary', cat: 'Homophones', base: "Their going to the park.", a: false, exp: "Incorrect. 'Their' implies ownership. It should be 'They're' (They are)." },
+    { t: 'binary', cat: 'Homophones', base: "There going to the park.", a: false, exp: "Incorrect. 'There' refers to a location. It should be 'They're' (They are)." },
+    { t: 'binary', cat: 'Homophones', base: "The book is over there.", a: true, exp: "Correct. 'There' refers to a specific place or location." },
+    { t: 'binary', cat: 'Homophones', base: "It is their book.", a: true, exp: "Correct. 'Their' is a possessive pronoun showing ownership of the book." },
+    { t: 'mc', cat: 'Subject-Verb', q: "The group of students ___ loud.", options: ["is", "are"], a: 0, exp: "The subject is 'group' (singular), not 'students' (plural). Therefore, the group IS loud." },
+    { t: 'mc', cat: 'Subject-Verb', q: "A bouquet of flowers ___ arrived.", options: ["has", "have"], a: 0, exp: "The subject is 'bouquet' (singular). The prepositional phrase 'of flowers' does not change the subject's number." },
+    { t: 'mc', cat: 'Pronouns', q: "Him and I went.", options: ["Him and I", "He and I"], a: 1, exp: "Always use the subject case ('He') when they are the ones performing the action." },
+    { t: 'mc', cat: 'Pronouns', q: "Give it to ___.", options: ["Steve and I", "Steve and me"], a: 1, exp: "Remove the other person to test it: You would say 'Give it to me', not 'Give it to I'." }
 ];
 
 // Procedurally generate filler questions
@@ -431,14 +620,7 @@ vocabVariations.forEach(v => {
 });
 
 // Final list compilation
-let questions = [...questionDB, ...templates, ...rawData];
-// To strictly hit "150+" for the user request
-while (questions.length < 150) {
-    const q = questions[Math.floor(Math.random() * questions.length)];
-    questions.push({...q}); 
-}
-
-const allQuestions = [...questions];
+const allQuestions = [...questionDB, ...templates, ...rawData];
 
 /**
  * CONFETTI ENGINE (Vanilla JS)
@@ -537,15 +719,44 @@ window.game = {
         paused: false,
         bentzyTriggered: false,
         globalMuted: false,
+        pendingMode: null,
+        isAdmin: false,
+        adminTestMode: false,
         count: 0,
         globalTimeLeft: 60,
-        globalTimer: null
+        globalTimer: null,
+        userProfile: {
+            username: 'Guest Player',
+            avatar: '👤',
+            avatarColor: 'bg-slate-200',
+            publicTag: '',
+            lastProfileChangeAt: null
+        },
+        savedUserProfile: {
+            username: 'Guest Player',
+            avatar: '👤',
+            avatarColor: 'bg-slate-200',
+            publicTag: '',
+            lastProfileChangeAt: null
+        }
     },
 
     init: function() {
         confetti.init();
         window.ui.showHome();
         window.ui.initInstallPrompt();
+        window.ui.checkDisplayMode();
+        this.initEventListeners();
+        window.ui.initAccordion();
+    },
+
+    initEventListeners: function() {
+        const startStd = document.getElementById('btn-start-standard');
+        const startDl = document.getElementById('btn-start-deadline');
+        const startBlitz = document.getElementById('btn-start-blitz');
+        if (startStd) startStd.addEventListener('click', () => this.confirmMode('standard'));
+        if (startDl) startDl.addEventListener('click', () => this.confirmMode('deadline'));
+        if (startBlitz) startBlitz.addEventListener('click', () => this.confirmMode('blitz'));
     },
 
     toggleSoundMute: function() {
@@ -554,6 +765,35 @@ window.game = {
             audio.init().catch(() => {});
         }
         window.ui.updateAudioToggle();
+    },
+
+    confirmMode: function(mode) {
+        this.state.pendingMode = mode;
+        const title = document.getElementById('mode-confirm-title');
+        const desc = document.getElementById('mode-confirm-desc');
+        const icon = document.getElementById('mode-confirm-icon');
+        
+        if (mode === 'standard') {
+            if (title) title.innerText = 'Standard Mode';
+            if (desc) desc.innerText = 'Relaxed pace. 3 lives. Build streaks in comfort.';
+            if (icon) icon.innerText = '🎯';
+        } else if (mode === 'deadline') {
+            if (title) title.innerText = 'Deadline Mode';
+            if (desc) desc.innerText = '10s timer per question. High stakes. Fast editing flow.';
+            if (icon) icon.innerText = '⏳';
+        } else if (mode === 'blitz') {
+            if (title) title.innerText = 'Blitz Mode';
+            if (desc) desc.innerText = '60 seconds global timer. Infinite lives. Test your speed.';
+            if (icon) icon.innerText = '⚡';
+        }
+        window.ui.toggleModal('modal-mode-confirm', true);
+    },
+
+    startPendingMode: function() {
+        window.ui.toggleModal('modal-mode-confirm', false);
+        if (this.state.pendingMode) {
+            this.start(this.state.pendingMode);
+        }
     },
 
     start: function(mode) {
@@ -614,7 +854,12 @@ window.game = {
         confetti.stop();
         
         // Shuffle Questions
-        this.state.questions = [...allQuestions].sort(() => 0.5 - Math.random());
+        this.state.questions = [...allQuestions];
+        // True random shuffle (Fisher-Yates) to prevent repetitive questions at the start
+        for (let i = this.state.questions.length - 1; i > 0; i--) {
+            const j = Math.floor(Math.random() * (i + 1));
+            [this.state.questions[i], this.state.questions[j]] = [this.state.questions[j], this.state.questions[i]];
+        }
         
         // UI Reset
         window.ui.showScreen('screen-game');
@@ -688,6 +933,20 @@ window.game = {
             isCorrect = (userSelection === q.a);
         } else {
             isCorrect = (userSelection === q.a);
+        }
+
+        // --- SILENT ANALYTICS TRACKING ---
+        // Tracks performance without saving if you are in Admin Test Mode
+        if (window.analytics && !this.state.adminTestMode) {
+            try {
+                logEvent(window.analytics, 'question_answered', {
+                    question_category: q.cat,
+                    is_correct: isCorrect ? 'true' : 'false',
+                    game_mode: this.state.mode
+                });
+            } catch (e) {
+                // Fail silently so it never interrupts gameplay
+            }
         }
 
         if (isCorrect) {
@@ -799,25 +1058,63 @@ window.game = {
         // FIX: Close pause modal explicitly in case we quit from there
         window.ui.toggleModal('modal-pause', false);
 
-        // Save game to Firestore if user is authenticated and score > 0
-        const user = auth.currentUser;
-        if (user && !quit && this.state.score > 0) {
-            const gameData = {
-                uid: user.uid,
-                name: user.displayName || 'Anonymous',
-                photoURL: user.photoURL || 'https://www.gravatar.com/avatar/?d=mp',
-                score: this.state.score,
-                maxStreak: this.state.maxStreak,
-                mode: this.state.mode,
-                timestamp: new Date()
-            };
-            addDoc(collection(db, 'games'), gameData).catch((error) => {
-                console.error('Error saving game:', error);
-            });
-        }
+        // Update DOM immediately before any network calls
+        document.getElementById('final-score').innerText = this.state.score;
+        document.getElementById('final-streak').innerText = this.state.maxStreak;
+        document.getElementById('final-count').innerText = `${this.state.count}`;
 
-        if(win) confetti.trigger();
+        // Show game over screen synchronously
         window.ui.showGameOver(win);
+        if(win) confetti.trigger();
+
+        // Isolate network calls with defensive programming
+        try {
+            // Save game to Firestore if user is authenticated and score > 0
+            const user = auth.currentUser;
+            if (user && !quit && this.state.score > 0 && !this.state.adminTestMode) {
+                const gameData = {
+                    uid: user.uid,
+                    name: user.displayName || 'Anonymous',
+                    photoURL: user.photoURL || 'https://www.gravatar.com/avatar/?d=mp',
+                    score: this.state.score,
+                    maxStreak: this.state.maxStreak,
+                    mode: this.state.mode,
+                    timestamp: new Date(),
+                    username: window.game.state.userProfile.username,
+                    avatar: window.game.state.userProfile.avatar,
+                    avatarColor: window.game.state.userProfile.avatarColor,
+                    publicTag: window.game.state.userProfile.publicTag || ''
+                };
+                addDoc(collection(db, 'games'), gameData).catch((error) => {
+                    console.error('Firebase save error:', error);
+                });
+            }
+
+            // Comparative ranking
+            const currentScore = this.state.score;
+            const currentMode = this.state.mode;
+            const q = query(collection(db, 'games'), where('score', '>', currentScore), where('mode', '==', currentMode));
+            getCountFromServer(q).then((snapshot) => {
+                const rank = snapshot.data().count + 1;
+                const rankEl = document.getElementById('endgame-comparative-rank');
+                rankEl.innerText = `You placed #${rank} globally this round!`;
+                rankEl.classList.remove('hidden');
+            }).catch((error) => {
+                console.error('Comparative ranking query error:', error);
+                // Leave rank text hidden on error
+            });
+
+            // Analytics
+            if (window.analytics) {
+                logEvent(window.analytics, 'level_end', {
+                    game_mode: window.game.state.mode,
+                    final_score: window.game.state.score,
+                    max_streak: window.game.state.maxStreak || 0
+                });
+            }
+        } catch (error) {
+            console.error("Firebase/Analytics Error during endgame:", error);
+        }
     },
 
     triggerEasterEgg: function() {
@@ -838,6 +1135,14 @@ window.game = {
  */
 window.ui = {
     screens: ['screen-home', 'screen-game', 'screen-gameover'],
+    returnToConfirm: false,
+
+    initTheme: function() {
+        const storedTheme = localStorage.getItem('editor-theme');
+        const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+        const isDark = storedTheme ? storedTheme === 'dark' : prefersDark;
+        document.documentElement.classList.toggle('dark', isDark);
+    },
     
     showScreen: function(id) {
         this.screens.forEach(s => document.getElementById(s).classList.add('hidden'));
@@ -861,7 +1166,8 @@ window.ui = {
     },
 
     toggleDarkMode: function() {
-        document.documentElement.classList.toggle('dark');
+        const isDark = document.documentElement.classList.toggle('dark');
+        localStorage.setItem('editor-theme', isDark ? 'dark' : 'light');
     },
 
     toggleModal: function(id, forceState) {
@@ -869,8 +1175,81 @@ window.ui = {
         const isHidden = el.classList.contains('hidden');
         const show = forceState !== undefined ? forceState : isHidden;
         
-        if (show) el.classList.remove('hidden');
-        else el.classList.add('hidden');
+        if (show) {
+            el.classList.remove('hidden');
+            if (id === 'modal-profile') {
+                const livePreview = document.getElementById('modal-live-preview');
+                const usernameInput = document.getElementById('profile-username-input');
+                if (livePreview) {
+                    livePreview.innerText = window.game.state.userProfile.avatar;
+                    livePreview.className = `w-24 h-24 rounded-full flex items-center justify-center text-5xl shadow-lg transition-colors duration-200 ${window.game.state.userProfile.avatarColor}`;
+                }
+                if (usernameInput) {
+                    usernameInput.value = window.game.state.savedUserProfile?.username || window.game.state.userProfile.username || '';
+                }
+            }
+        } else {
+            el.classList.add('hidden');
+        }
+    },
+
+    renderHowTo: function(mode) {
+        const container = document.getElementById('how-to-content');
+        if (!container) return;
+
+        const colors = {
+            indigo: "bg-indigo-100 text-indigo-600 dark:bg-indigo-500/20 dark:text-indigo-300",
+            amber: "bg-amber-100 text-amber-600 dark:bg-amber-500/20 dark:text-amber-300",
+            red: "bg-red-100 text-red-600 dark:bg-red-500/20 dark:text-red-300",
+            orange: "bg-orange-100 text-orange-600 dark:bg-orange-500/20 dark:text-orange-300"
+        };
+
+        let rules = [];
+
+        if (mode === 'general') {
+            rules.push({ title: "Review the Manuscript", desc: "Read the sentence on the yellow paper card.", color: "indigo" });
+            rules.push({ title: "Make the Call", desc: "Select the option that fixes the error, or Approve/Reject if asked.", color: "indigo" });
+            rules.push({ title: "Score & Streaks", desc: "Base: 1 pt. Streak 3+: 2x points. Streak 10+: 5x points.", color: "amber" });
+        } else if (mode === 'deadline') {
+            rules.push({ title: "10-Second Timer", desc: "You have exactly 10 seconds per question. Don't let it run out!", color: "red" });
+            rules.push({ title: "3 Lives", desc: "Three mistakes or timeouts and the game is over.", color: "orange" });
+        } else if (mode === 'blitz') {
+            rules.push({ title: "60-Second Rush", desc: "You have exactly one minute to answer as many as possible.", color: "orange" });
+            rules.push({ title: "Infinite Lives", desc: "Mistakes won't end the game, but they will reset your streak.", color: "red" });
+        } else if (mode === 'standard') {
+            rules.push({ title: "No Time Limit", desc: "Take your time. Read carefully and make the right call.", color: "indigo" });
+            rules.push({ title: "3 Lives", desc: "Three strikes and the game is over.", color: "red" });
+        }
+
+        container.innerHTML = rules.map((r, i) => `
+            <div class="flex items-start gap-3">
+                <div class="flex-shrink-0 w-8 h-8 rounded-full flex items-center justify-center font-bold text-sm ${colors[r.color]}">${i + 1}</div>
+                <div>
+                    <p class="font-bold text-slate-800 dark:text-slate-100">${r.title}</p>
+                    <p class="text-sm text-slate-600 mt-1 dark:text-slate-300">${r.desc}</p>
+                </div>
+            </div>
+        `).join('');
+    },
+
+    openHowToGeneral: function() {
+        this.renderHowTo('general'); // Show universal rules from main menu
+        this.toggleModal('modal-how-to', true);
+    },
+
+    openHowToFromConfirm: function() {
+        this.returnToConfirm = true;
+        this.toggleModal('modal-mode-confirm', false);
+        this.renderHowTo(window.game.state.pendingMode);
+        this.toggleModal('modal-how-to', true);
+    },
+
+    closeHowTo: function() {
+        this.toggleModal('modal-how-to', false);
+        if (this.returnToConfirm) {
+            this.toggleModal('modal-mode-confirm', true);
+            this.returnToConfirm = false;
+        }
     },
 
     updateStatus: function() {
@@ -890,17 +1269,33 @@ window.ui = {
         const iconHome = document.getElementById('audio-toggle-icon-home');
         const iconGame = document.getElementById('audio-toggle-icon-game');
         const muted = window.game.state.globalMuted;
-        const icon = muted ? '🔇' : '🔊';
-        if (iconHome) iconHome.innerText = icon;
-        if (iconGame) iconGame.innerText = icon;
+        
+        if (iconHome) {
+            if (muted) {
+                iconHome.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="w-6 h-6"><path stroke-linecap="round" stroke-linejoin="round" d="M17.25 9.75L19.5 12m0 0l2.25 2.25M19.5 12l2.25-2.25M19.5 12l-2.25 2.25m-10.5-6l4.72-4.72a.75.75 0 011.28.53v15.88a.75.75 0 01-1.28.53l-4.72-4.72H4.51c-.88 0-1.704-.507-1.938-1.354A9.01 9.01 0 012.25 12c0-.83.112-1.633.322-2.396C2.806 8.756 3.63 8.25 4.51 8.25H6.75z" /></svg>';
+            } else {
+                iconHome.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="w-6 h-6"><path stroke-linecap="round" stroke-linejoin="round" d="M19.114 5.636a9 9 0 010 12.728M16.463 8.288a5.25 5.25 0 010 7.424M6.75 8.25l4.72-4.72a.75.75 0 011.28.53v15.88a.75.75 0 01-1.28.53l-4.72-4.72H4.51c-.88 0-1.704-.507-1.938-1.354A9.01 9.01 0 012.25 12c0-.83.112-1.633.322-2.396C2.806 8.756 3.63 8.25 4.51 8.25H6.75z" /></svg>';
+            }
+        }
+        if (iconGame) {
+            if (muted) {
+                iconGame.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="w-6 h-6"><path stroke-linecap="round" stroke-linejoin="round" d="M17.25 9.75L19.5 12m0 0l2.25 2.25M19.5 12l2.25-2.25M19.5 12l-2.25 2.25m-10.5-6l4.72-4.72a.75.75 0 011.28.53v15.88a.75.75 0 01-1.28.53l-4.72-4.72H4.51c-.88 0-1.704-.507-1.938-1.354A9.01 9.01 0 012.25 12c0-.83.112-1.633.322-2.396C2.806 8.756 3.63 8.25 4.51 8.25H6.75z" /></svg>';
+            } else {
+                iconGame.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="w-6 h-6"><path stroke-linecap="round" stroke-linejoin="round" d="M19.114 5.636a9 9 0 010 12.728M16.463 8.288a5.25 5.25 0 010 7.424M6.75 8.25l4.72-4.72a.75.75 0 011.28.53v15.88a.75.75 0 01-1.28.53l-4.72-4.72H4.51c-.88 0-1.704-.507-1.938-1.354A9.01 9.01 0 012.25 12c0-.83.112-1.633.322-2.396C2.806 8.756 3.63 8.25 4.51 8.25H6.75z" /></svg>';
+            }
+        }
     },
 
-    handleLeaderboardButton: function() {
+    handleLeaderboardButton: async function() {
         if (!auth.currentUser) {
             alert('Sign in to view leaderboards');
             return;
         }
-        this.showLeaderboard();
+        try {
+            await this.showLeaderboard();
+        } catch (error) {
+            console.error("Leaderboard crash:", error);
+        }
     },
 
     getQuestionTypeDetail: function(q) {
@@ -966,7 +1361,7 @@ window.ui = {
             
             q.options.forEach((opt, idx) => {
                 const btn = document.createElement('button');
-                btn.className = "w-full bg-white border border-indigo-100 hover:border-indigo-500 hover:text-indigo-700 text-slate-700 font-bold py-4 px-6 rounded-2xl shadow-sm transition-all text-left text-lg active:bg-indigo-50";
+                btn.className = "w-full bg-white border border-indigo-100 hover:border-indigo-500 hover:text-indigo-700 text-slate-700 font-bold py-4 px-6 rounded-2xl shadow-sm transition-all text-left text-lg active:bg-indigo-50 dark:bg-slate-900 dark:border-slate-700 dark:text-slate-100 dark:hover:border-indigo-400 dark:hover:text-indigo-300 dark:active:bg-slate-800";
                 btn.innerText = opt;
                 btn.onclick = () => window.game.handleAnswer(idx);
                 mcCtrl.appendChild(btn);
@@ -984,7 +1379,7 @@ window.ui = {
         fb.className = isCorrect ? "block text-center font-bold mt-4 text-green-600 text-xl pop-in" : "block text-center font-bold mt-4 text-red-600 text-xl pop-in";
         
         const txt = document.getElementById('q-text');
-        txt.innerHTML += `<br><br><span class='text-sm text-slate-500 font-sans border-t pt-2 block'>${explanation}</span>`;
+        txt.innerHTML += `<br><br><span class='text-sm text-slate-500 font-sans border-t pt-2 block dark:text-slate-400 dark:border-slate-700'>${explanation}</span>`;
         
         const btnLearn = document.createElement('button');
         btnLearn.id = 'btn-learn-more';
@@ -1009,32 +1404,93 @@ window.ui = {
         this.showScreen('screen-gameover');
         
         // Dynamic Victory Logic
-        const icon = document.getElementById('gameover-icon');
         const title = document.getElementById('gameover-title');
         const msg = document.getElementById('gameover-msg');
         
         if (win) {
-            icon.innerText = "🏆";
-            title.innerText = "Edition Perfect!";
-            title.className = "text-3xl font-bold text-green-600";
-            msg.innerText = "The manuscript is flawless. You are a master editor.";
+            if (title) {
+                title.innerText = "Edition Perfect!";
+                title.className = "text-3xl font-bold text-green-600 dark:text-green-400";
+            }
+            if (msg) {
+                msg.innerText = "The manuscript is flawless. You are a master editor.";
+            }
         } else {
-            icon.innerText = "📝";
-            title.innerText = "Final Edit";
-            title.className = "text-3xl font-bold text-slate-900";
-            msg.innerText = "Good effort, but the printing press waits for no one.";
+            if (title) {
+                title.innerText = "Final Edit";
+                title.className = "text-3xl font-bold text-slate-900 dark:text-slate-100";
+            }
+            if (msg) {
+                msg.innerText = "Good effort, but the printing press waits for no one.";
+            }
         }
         
-        document.getElementById('final-score').innerText = window.game.state.score;
-        document.getElementById('final-streak').innerText = window.game.state.maxStreak; 
-        // FIXED: Use tracked count instead of array math to ensure accuracy
-        document.getElementById('final-count').innerText = `${window.game.state.count}`;
+        const scoreEl = document.getElementById('final-score');
+        if (scoreEl) {
+            scoreEl.innerText = window.game.state.score;
+        }
+        const streakEl = document.getElementById('final-streak');
+        if (streakEl) {
+            streakEl.innerText = window.game.state.maxStreak;
+        }
+        const countEl = document.getElementById('final-count');
+        if (countEl) {
+            countEl.innerText = `${window.game.state.count}`;
+        }
+
+        // Show install prompt gently after gameplay finishes (delayed to wait for endgame animations)
+        setTimeout(() => {
+            this.showInstallToastIfNeeded();
+        }, 3500);
     },
 
     showLeaderboard: async function(mode = 'standard', sortBy = 'score') {
-        this.toggleModal('modal-leaderboard', true);
+        this.toggleModal('leaderboard-modal', true);
         const listEl = document.getElementById('leaderboard-list');
-        listEl.innerHTML = '<p class="text-center text-slate-500 py-8">Loading...</p>';
+        listEl.innerHTML = `
+            <div class="space-y-3">
+                <div class="flex items-center gap-4 p-4 bg-slate-50 rounded-lg animate-pulse dark:bg-slate-800/80">
+                    <div class="w-8 h-8 rounded-full bg-slate-200 dark:bg-slate-700"></div>
+                    <div class="w-10 h-10 rounded-full bg-slate-200 dark:bg-slate-700"></div>
+                    <div class="flex-1 space-y-2">
+                        <div class="h-4 w-28 rounded bg-slate-200 dark:bg-slate-700"></div>
+                    </div>
+                    <div class="h-5 w-20 rounded bg-slate-200 dark:bg-slate-700"></div>
+                </div>
+                <div class="flex items-center gap-4 p-4 bg-slate-50 rounded-lg animate-pulse dark:bg-slate-800/80">
+                    <div class="w-8 h-8 rounded-full bg-slate-200 dark:bg-slate-700"></div>
+                    <div class="w-10 h-10 rounded-full bg-slate-200 dark:bg-slate-700"></div>
+                    <div class="flex-1 space-y-2">
+                        <div class="h-4 w-24 rounded bg-slate-200 dark:bg-slate-700"></div>
+                    </div>
+                    <div class="h-5 w-16 rounded bg-slate-200 dark:bg-slate-700"></div>
+                </div>
+                <div class="flex items-center gap-4 p-4 bg-slate-50 rounded-lg animate-pulse dark:bg-slate-800/80">
+                    <div class="w-8 h-8 rounded-full bg-slate-200 dark:bg-slate-700"></div>
+                    <div class="w-10 h-10 rounded-full bg-slate-200 dark:bg-slate-700"></div>
+                    <div class="flex-1 space-y-2">
+                        <div class="h-4 w-32 rounded bg-slate-200 dark:bg-slate-700"></div>
+                    </div>
+                    <div class="h-5 w-20 rounded bg-slate-200 dark:bg-slate-700"></div>
+                </div>
+                <div class="flex items-center gap-4 p-4 bg-slate-50 rounded-lg animate-pulse dark:bg-slate-800/80">
+                    <div class="w-8 h-8 rounded-full bg-slate-200 dark:bg-slate-700"></div>
+                    <div class="w-10 h-10 rounded-full bg-slate-200 dark:bg-slate-700"></div>
+                    <div class="flex-1 space-y-2">
+                        <div class="h-4 w-24 rounded bg-slate-200 dark:bg-slate-700"></div>
+                    </div>
+                    <div class="h-5 w-20 rounded bg-slate-200 dark:bg-slate-700"></div>
+                </div>
+                <div class="flex items-center gap-4 p-4 bg-slate-50 rounded-lg animate-pulse dark:bg-slate-800/80">
+                    <div class="w-8 h-8 rounded-full bg-slate-200 dark:bg-slate-700"></div>
+                    <div class="w-10 h-10 rounded-full bg-slate-200 dark:bg-slate-700"></div>
+                    <div class="flex-1 space-y-2">
+                        <div class="h-4 w-28 rounded bg-slate-200 dark:bg-slate-700"></div>
+                    </div>
+                    <div class="h-5 w-16 rounded bg-slate-200 dark:bg-slate-700"></div>
+                </div>
+            </div>
+        `;
 
         // Update active main tab styling
         const tabs = ['standard', 'deadline', 'blitz'];
@@ -1042,19 +1498,19 @@ window.ui = {
             const tabBtn = document.getElementById(`lb-tab-${tab}`);
             if (tabBtn) {
                 if (tab === mode) {
-                    tabBtn.className = 'px-3 py-1 rounded-full text-xs font-bold transition-all bg-indigo-600 text-white';
+                    tabBtn.className = 'px-3 py-1 rounded-full text-xs font-bold transition-all bg-indigo-600 text-white shadow-sm shadow-indigo-500/20';
                 } else {
-                    tabBtn.className = 'px-3 py-1 rounded-full text-xs font-bold transition-all bg-slate-200 text-slate-700 hover:bg-slate-300';
+                    tabBtn.className = 'px-3 py-1 rounded-full text-xs font-bold transition-all bg-slate-200 text-slate-700 hover:bg-slate-300 dark:bg-slate-800 dark:text-slate-200 dark:hover:bg-slate-700';
                 }
             }
         });
 
-        // Show/hide deadline sub-nav
+        // Preserve sub-nav height across modes to avoid modal layout shifts
         const subNav = document.getElementById('deadline-sub-nav');
         if (mode === 'deadline') {
-            subNav.classList.remove('hidden');
+            subNav.classList.remove('invisible', 'pointer-events-none');
         } else {
-            subNav.classList.add('hidden');
+            subNav.classList.add('invisible', 'pointer-events-none');
         }
 
         // Update active sub-nav button styling
@@ -1063,9 +1519,9 @@ window.ui = {
             const subBtn = document.getElementById(`lb-sub-${subTab}`);
             if (subBtn) {
                 if (subTab === sortBy) {
-                    subBtn.className = 'px-4 py-2 rounded-full text-sm font-bold transition-all bg-indigo-600 text-white';
+                    subBtn.className = 'px-4 py-2 rounded-full text-sm font-bold transition-all bg-indigo-600 text-white shadow-sm shadow-indigo-500/20';
                 } else {
-                    subBtn.className = 'px-4 py-2 rounded-full text-sm font-bold transition-all bg-slate-200 text-slate-700 hover:bg-slate-300';
+                    subBtn.className = 'px-4 py-2 rounded-full text-sm font-bold transition-all bg-slate-200 text-slate-700 hover:bg-slate-300 dark:bg-slate-800 dark:text-slate-200 dark:hover:bg-slate-700';
                 }
             }
         });
@@ -1095,19 +1551,24 @@ window.ui = {
 
             const querySnapshot = await getDocs(q);
             
-            let html = '';
+            let html = '<div class="space-y-3">';
             let rank = 1;
             querySnapshot.forEach((doc) => {
                 const data = doc.data();
+                const playerName = data.username || data.displayName || "Anonymous Editor";
+                const playerAvatar = data.avatar || "👤";
+                const playerBg = data.avatarColor || "bg-gray-200";
+                const playerTag = data.publicTag || '';
                 const medal = rank === 1 ? '🥇' : rank === 2 ? '🥈' : rank === 3 ? '🥉' : '🏅';
                 const displayValue = isStreakSort ? data.maxStreak : data.score;
                 const displayIcon = isStreakSort ? '🔥' : '';
                 html += `
-                    <div class="flex items-center gap-4 p-4 bg-slate-50 rounded-lg">
-                        <div class="flex-shrink-0 w-8 h-8 rounded-full bg-indigo-100 text-indigo-600 flex items-center justify-center font-bold text-sm">${rank}</div>
-                        <img src="${data.photoURL}" alt="${data.name}" class="w-10 h-10 rounded-full object-cover">
+                    <div class="flex items-center gap-4 p-4 bg-slate-50 rounded-lg dark:bg-slate-800/80">
+                        <div class="flex-shrink-0 w-8 h-8 rounded-full bg-indigo-100 text-indigo-600 flex items-center justify-center font-bold text-sm dark:bg-indigo-500/20 dark:text-indigo-300">${rank}</div>
+                        <div class="w-10 h-10 rounded-full flex items-center justify-center text-lg ${playerBg}">${playerAvatar}</div>
                         <div class="flex-1 min-w-0">
-                            <p class="font-bold text-slate-900 truncate">${data.name}</p>
+                            <p class="font-bold text-slate-900 truncate dark:text-slate-100">${playerName}</p>
+                            ${playerTag ? `<p class="text-xs font-semibold uppercase tracking-[0.18em] text-slate-400 dark:text-slate-500">${playerTag}</p>` : ''}
                         </div>
                         <div class="flex items-center gap-2">
                             <span class="text-2xl">${medal}</span>
@@ -1119,58 +1580,52 @@ window.ui = {
             });
 
             if (querySnapshot.empty) {
-                html = '<p class="text-center text-slate-500 py-8">No games yet. Be the first!</p>';
+                html = `
+                    <div class="flex h-full min-h-full flex-col items-center justify-center rounded-xl bg-slate-50 px-6 text-center dark:bg-slate-800/70">
+                        <p class="text-lg font-semibold text-slate-700 dark:text-slate-100">No games yet.</p>
+                        <p class="mt-2 text-sm text-slate-500 dark:text-slate-400">Be the first to put a score on the board.</p>
+                    </div>
+                `;
+            } else {
+                html += '</div>';
             }
 
             listEl.innerHTML = html;
         } catch (error) {
             console.error('Error fetching leaderboard:', error);
-            listEl.innerHTML = '<p class="text-center text-red-500 py-8">Failed to load leaderboard. Try again later.</p>';
+            listEl.innerHTML = `
+                <div class="flex h-full min-h-full flex-col items-center justify-center rounded-xl bg-red-50 px-6 text-center dark:bg-red-950/40">
+                    <p class="text-base font-semibold text-red-600">Failed to load leaderboard.</p>
+                    <p class="mt-2 text-sm text-red-500 dark:text-red-300">Try again in a moment.</p>
+                </div>
+            `;
         }
     },
 
     initInstallPrompt: function() {
-        // Gatekeeper: Check if already seen or in standalone mode
-        if (localStorage.getItem('hasSeenInstallPrompt') || window.matchMedia('(display-mode: standalone)').matches) {
-            return;
-        }
-
         const toast = document.getElementById('install-toast');
         const closeBtn = document.getElementById('close-install-toast');
         const installBtn = document.getElementById('install-btn');
-        const instructions = document.getElementById('install-instructions');
 
-        if (!toast || !closeBtn || !installBtn || !instructions) return;
+        if (!toast || !closeBtn || !installBtn) return;
 
-        let deferredPrompt;
-
-        // Android Logic
+        // Android Logic - Capture prompt, don't show UI immediately
         window.addEventListener('beforeinstallprompt', (e) => {
             e.preventDefault();
-            deferredPrompt = e;
-            toast.classList.remove('hidden');
-            installBtn.classList.remove('hidden');
-            instructions.innerText = 'Get the full-screen app experience!';
+            window.deferredPrompt = e;
         });
 
-        // iOS Logic
-        const isIOS = /iphone|ipad|ipod/.test(navigator.userAgent.toLowerCase());
-        if (isIOS) {
-            toast.classList.remove('hidden');
-            instructions.innerText = "To install: tap the Share icon at the bottom of Safari and select 'Add to Home Screen'.";
-        }
-
-        // Install Button Click
+        // Install Button Click (Toast)
         installBtn.addEventListener('click', () => {
-            if (deferredPrompt) {
-                deferredPrompt.prompt();
-                deferredPrompt.userChoice.then((choiceResult) => {
+            if (window.deferredPrompt) {
+                window.deferredPrompt.prompt();
+                window.deferredPrompt.userChoice.then((choiceResult) => {
                     if (choiceResult.outcome === 'accepted') {
                         console.log('User accepted the install prompt');
                     } else {
                         console.log('User dismissed the install prompt');
                     }
-                    deferredPrompt = null;
+                    window.deferredPrompt = null;
                 });
             }
             localStorage.setItem('hasSeenInstallPrompt', 'true');
@@ -1182,10 +1637,197 @@ window.ui = {
             localStorage.setItem('hasSeenInstallPrompt', 'true');
             toast.classList.add('hidden');
         });
+    },
+
+    showInstallToastIfNeeded: function() {
+        // Gatekeeper: Check if already seen, in standalone mode, or not mobile
+        const isStandalone = window.matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
+        if (localStorage.getItem('hasSeenInstallPrompt') || isStandalone || !isMobile) {
+            return;
+        }
+
+        const toast = document.getElementById('install-toast');
+        const installBtn = document.getElementById('install-btn');
+        const instructions = document.getElementById('install-instructions');
+        
+        if (!toast || !instructions) return;
+
+        const isIOS = /iphone|ipad|ipod/.test(navigator.userAgent.toLowerCase());
+        
+        if (isIOS) {
+            toast.classList.remove('hidden');
+            instructions.innerText = "To install: tap the Share icon at the bottom of Safari and select 'Add to Home Screen'.";
+            if (installBtn) installBtn.classList.add('hidden');
+        } else if (window.deferredPrompt) {
+            toast.classList.remove('hidden');
+            instructions.innerText = 'Get the full-screen app experience!';
+            if (installBtn) installBtn.classList.remove('hidden');
+        }
+    },
+
+    checkDisplayMode: function() {
+        // Check if app is running in standalone mode (PWA installed)
+        const isStandalone = window.matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
+        const sidebarInstallBtn = document.getElementById('sidebar-install-btn');
+
+        if (!sidebarInstallBtn) return;
+
+        // Show button ONLY if NOT in standalone mode AND device is mobile
+        if (!isStandalone && isMobile) {
+            sidebarInstallBtn.classList.remove('hidden');
+        } else {
+            sidebarInstallBtn.classList.add('hidden');
+        }
+    },
+
+    handleSidebarInstall: function() {
+        const toast = document.getElementById('install-toast');
+        const instructions = document.getElementById('install-instructions');
+        const isIOS = /iphone|ipad|ipod/.test(navigator.userAgent.toLowerCase());
+
+        if (isIOS) {
+            // iOS: Show the install toast with instructions
+            if (toast) {
+                toast.classList.remove('hidden');
+                if (instructions) {
+                    instructions.innerText = "To install: tap the Share icon at the bottom of Safari and select 'Add to Home Screen'.";
+                }
+            }
+            // Close sidebar so user can see the toast
+            window.ui.closeSidebar();
+        } else if (window.deferredPrompt) {
+            // Android: Trigger the install prompt
+            window.deferredPrompt.prompt();
+            window.deferredPrompt.userChoice.then((choiceResult) => {
+                if (choiceResult.outcome === 'accepted') {
+                    console.log('User accepted the install prompt');
+                } else {
+                    console.log('User dismissed the install prompt');
+                }
+                window.deferredPrompt = null;
+            });
+        }
+    },
+
+    updateHeaderProfile: function() {
+        const headerAvatar = document.getElementById('header-avatar');
+        const headerUsername = document.getElementById('header-username');
+        const sidebarAvatar = document.getElementById('sidebar-avatar');
+        const sidebarUsername = document.getElementById('sidebar-username');
+        
+        if (headerAvatar) {
+            headerAvatar.innerText = window.game.state.userProfile.avatar;
+            headerAvatar.className = `w-10 h-10 rounded-full flex items-center justify-center text-xl shadow-sm ${window.game.state.userProfile.avatarColor}`;
+        }
+        if (headerUsername) {
+            headerUsername.innerText = window.game.state.userProfile.username;
+        }
+        if (sidebarUsername) {
+            sidebarUsername.innerText = window.game.state.userProfile.username;
+        }
+        if (sidebarAvatar) {
+            sidebarAvatar.innerText = window.game.state.userProfile.avatar;
+            sidebarAvatar.className = `w-20 h-20 rounded-full flex items-center justify-center text-4xl shadow-md mx-auto mb-2 ${window.game.state.userProfile.avatarColor}`;
+        }
+    },
+
+    updateAdminUI: function() {
+        const adminPanel = document.getElementById('admin-panel');
+        const adminBadge = document.getElementById('sidebar-admin-badge');
+        const adminEmail = document.getElementById('admin-email');
+        const adminTestModeToggle = document.getElementById('admin-test-mode-toggle');
+        const adminTestModeLabel = document.getElementById('admin-test-mode-label');
+
+        if (!window.game.state.isAdmin) {
+            if (adminPanel) adminPanel.classList.add('hidden');
+            if (adminBadge) adminBadge.classList.add('hidden');
+            return;
+        }
+
+        if (adminPanel) adminPanel.classList.remove('hidden');
+        if (adminBadge) adminBadge.classList.remove('hidden');
+        if (adminEmail) adminEmail.innerText = window.game.state.user?.email || '';
+        if (adminTestModeToggle) adminTestModeToggle.checked = !!window.game.state.adminTestMode;
+        if (adminTestModeLabel) {
+            adminTestModeLabel.innerText = window.game.state.adminTestMode
+                ? 'Test Mode: ON (Scores not saved)'
+                : 'Test Mode: OFF (Scores are saved)';
+        }
+    },
+
+    toggleAdminTestMode: function(enabled) {
+        if (!window.game.state.isAdmin || !window.game.state.user?.uid) return;
+        window.game.state.adminTestMode = enabled;
+        localStorage.setItem(`editor-admin-test-mode:${window.game.state.user.uid}`, enabled ? 'true' : 'false');
+        this.updateAdminUI();
+    },
+
+    selectProfileEmoji: function(buttonEl, emoji) {
+        // Remove border from all emoji buttons
+        document.querySelectorAll('#profile-emoji-grid button').forEach(btn => {
+            btn.classList.remove('border-indigo-500');
+            btn.classList.add('border-transparent');
+        });
+        
+        // Add border to selected button
+        buttonEl.classList.remove('border-transparent');
+        buttonEl.classList.add('border-indigo-500');
+        
+        // Update state
+        window.game.state.userProfile.avatar = emoji;
+        
+        // Update live preview
+        const livePreview = document.getElementById('modal-live-preview');
+        if (livePreview) livePreview.innerText = emoji;
+    },
+
+    selectProfileColor: function(buttonEl, colorClass) {
+        // Remove border-indigo-500 from all color swatches
+        document.querySelectorAll('#profile-color-swatches button').forEach(btn => {
+            btn.classList.remove('border-indigo-500');
+            btn.classList.add('border-slate-200');
+        });
+        
+        // Add border-indigo-500 to selected swatch
+        buttonEl.classList.remove('border-slate-200');
+        buttonEl.classList.add('border-indigo-500');
+        
+        // Update state
+        window.game.state.userProfile.avatarColor = colorClass;
+        
+        // Update live preview
+        const livePreview = document.getElementById('modal-live-preview');
+        if (livePreview) {
+            // Remove old color classes
+            livePreview.classList.forEach(cls => {
+                if (cls.startsWith('bg-')) livePreview.classList.remove(cls);
+            });
+            livePreview.classList.add(colorClass);
+        }
+    },
+
+    initAccordion: function() {
+        const accordion = document.getElementById('cheat-sheet-accordion');
+        if (!accordion) return;
+
+        accordion.addEventListener('click', (e) => {
+            const header = e.target.closest('.accordion-header');
+            if (!header) return;
+
+            const item = header.parentElement;
+            const currentlyActive = item.classList.contains('active');
+            accordion.querySelectorAll('.accordion-item').forEach(el => el.classList.remove('active'));
+            if (!currentlyActive) item.classList.add('active');
+        });
+    },
+
+    saveProfile: function() {
+        window.authEngine.saveProfile();
     }
 };
 
 // Initialize
 document.addEventListener('DOMContentLoaded', () => {
+    window.ui.initTheme();
     window.game.init();
 });
